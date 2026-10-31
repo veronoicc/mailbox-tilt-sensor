@@ -230,21 +230,31 @@ Decoded JSON output example:
 
 ## 5. WebBluetooth Diagnostics & Maintenance Interface
 
-To diagnose the sensor, re-calibrate zero, or trigger firmware updates without taking the enclosure off the mailbox wall, a standalone web interface is included: [`web_ble_interface.html`](./web_ble_interface.html).
+To diagnose the sensor, re-calibrate zero, or trigger firmware updates without dismounting the enclosure, a dedicated WebBluetooth instrument console is included in [`web/`](./web/).
+
+* **Online GitHub Pages App:** `https://veronoicc.github.io/mailbox-tilt-sensor/`
+* *(Web Bluetooth requires a Secure Context (HTTPS), provided automatically by GitHub Pages).*
 
 ### 5.1 Triggering Maintenance Mode
 1. Open the mailbox flap all the way (**> 60°**) and hold it open continuously for **15 seconds**.
    *(Normal mail drops and catalogs wedging the flap at 20°–40° will NOT trigger BLE mode, protecting the battery).*
 2. The node wakes Bluetooth LE advertising as **`Mailbox-Sensor`** for 60 seconds.
-3. Open `web_ble_interface.html` in Chrome / Edge (Android, PC, Mac) or Bluefy (iOS) and click **Connect**.
+3. Open the web app in Chrome / Edge (Android, PC, Mac) or Bluefy (iOS) and click **connect to mailbox sensor**.
 
 ### 5.2 PIN Authentication & Actions
 All modifying actions are protected by a configurable PIN (defined in `settings.h`, default: `123456`):
-* **Live Telemetry:** Streams live battery rest voltage, voltage sag, temperature, and pitch angle in real-time.
+* **Live Telemetry:** Streams live battery rest voltage, voltage sag under load, temperature, and pitch angle in real-time.
 * **Zero Calibration:** Latches the current physical position as the new resting horizon ($0^\circ$).
 * **Reboot to DFU:** Reboots the nRF52840 into the UF2 bootloader for USB or OTA firmware updates.
 * **Inactivity Auto-Sleep:** After 60 seconds of no Bluetooth traffic, the BLE radio completely shuts off and the node drops back to 2 µA System-Off sleep.
----
+
+### 5.3 Automated GitHub Pages Deployment (No Extra Branch Needed)
+The web console in `web/` is automatically deployed via GitHub Actions:
+
+1. In your GitHub repository at `veronoicc/mailbox-tilt-sensor`, go to **Settings -> Pages**.
+2. Under **Build and deployment -> Source**, select **GitHub Actions**.
+3. Every time you push to `main`, the included workflow ([`.github/workflows/deploy-pages.yml`](./.github/workflows/deploy-pages.yml)) automatically publishes the contents of `web/` to:
+   `https://veronoicc.github.io/mailbox-tilt-sensor/`
 
 ## 6. Home Assistant Integration
 
