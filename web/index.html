@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="WebBluetooth diagnostics, zero calibration, and DFU bootloader control for the LoRaWAN mailbox tilt sensor.">
+  <title>Mailbox Node Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;500&family=Host+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <header class="top-bar">
+    <div class="container top-bar-inner">
+      <span class="brand-mark">mailbox node console</span>
+      <span class="device-status" id="deviceStatus" data-state="disconnected">disconnected</span>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <div class="container layout-stack">
+      
+      <!-- Connection Panel -->
+      <section class="panel" aria-labelledby="connect-heading">
+        <div class="panel-header">
+          <h2 class="panel-title" id="connect-heading">bluetooth connection</h2>
+          <span class="panel-meta">nordic uart service</span>
+        </div>
+        <p class="instruction-text">
+          Hold the mailbox flap open past 60 degrees for 15 seconds to initiate low-power maintenance advertising. The radio will listen for 60 seconds.
+        </p>
+        <button type="button" class="btn-primary" id="btnConnect">connect to mailbox sensor</button>
+        <button type="button" class="btn-secondary" id="btnDisconnect" style="display: none; width: 100%; margin-top: var(--space-xs);">disconnect</button>
+      </section>
+
+      <!-- Telemetry Panel -->
+      <section class="panel" aria-labelledby="telemetry-heading" id="telemetrySection" aria-live="polite">
+        <div class="panel-header">
+          <h2 class="panel-title" id="telemetry-heading">live instrument telemetry</h2>
+          <span class="panel-meta" id="firmwareVersion">fw --</span>
+        </div>
+        <div class="telemetry-grid">
+          <div class="telemetry-cell">
+            <span class="telemetry-label">rest voltage</span>
+            <span class="telemetry-value"><span id="valVRest">--</span><span class="telemetry-unit">v</span></span>
+          </div>
+          <div class="telemetry-cell">
+            <span class="telemetry-label">voltage sag under load</span>
+            <span class="telemetry-value"><span id="valVSag">--</span><span class="telemetry-unit">mv</span></span>
+          </div>
+          <div class="telemetry-cell">
+            <span class="telemetry-label">flap pitch angle</span>
+            <span class="telemetry-value"><span id="valTilt">--</span><span class="telemetry-unit">deg</span></span>
+          </div>
+          <div class="telemetry-cell">
+            <span class="telemetry-label">die temperature</span>
+            <span class="telemetry-value"><span id="valTemp">--</span><span class="telemetry-unit">c</span></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Maintenance Controls -->
+      <section class="panel" aria-labelledby="maintenance-heading" id="maintenanceSection">
+        <div class="panel-header">
+          <h2 class="panel-title" id="maintenance-heading">calibration and actions</h2>
+          <span class="panel-meta">authenticated</span>
+        </div>
+
+        <div class="auth-form">
+          <label for="inputPin" class="field-label">maintenance pin</label>
+          <input type="password" id="inputPin" class="field-input" value="123456" autocomplete="current-password">
+        </div>
+
+        <div class="actions-row">
+          <button type="button" class="btn-secondary" id="btnRecalibrate" disabled>calibrate zero horizon</button>
+          <button type="button" class="btn-danger" id="btnDfu" disabled>reboot to dfu bootloader</button>
+        </div>
+        <button type="button" class="btn-secondary" id="btnSleep" disabled style="width: 100%; margin-top: var(--space-xs);">disconnect and deep sleep</button>
+      </section>
+
+      <!-- Protocol Audit Log -->
+      <section class="panel" aria-labelledby="audit-heading">
+        <div class="panel-header">
+          <h2 class="panel-title" id="audit-heading">protocol log</h2>
+          <span class="panel-meta">events</span>
+        </div>
+        <div class="log-view" id="logView" role="log" aria-live="polite">awaiting connection…</div>
+      </section>
+
+    </div>
+  </main>
+
+  <script>
+    const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const NUS_RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+    const NUS_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+    let bluetoothDevice = null;
+    let rxChar = null;
+    let txChar = null;
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+
+    const deviceStatus = document.getElementById("deviceStatus");
+    const btnConnect = document.getElementById("btnConnect");
+    const btnDisconnect = document.getElementById("btnDisconnect");
+    const btnRecalibrate = document.getElementById("btnRecalibrate");
+    const btnDfu = document.getElementById("btnDfu");
+    const btnSleep = document.getElementById("btnSleep");
+    const logView = document.getElementById("logView");
+
+    function appendLog(line) {
+      logView.textContent += "\n" + line;
+      logView.scrollTop = logView.scrollHeight;
+    }
+
+    function setInterfaceState(connected) {
+      btnRecalibrate.disabled = !connected;
+      btnDfu.disabled = !connected;
+      btnSleep.disabled = !connected;
+      btnConnect.style.display = connected ? "none" : "block";
+      btnDisconnect.style.display = connected ? "block" : "none";
+
+      if (connected) {
+        deviceStatus.textContent = "connected: " + (bluetoothDevice.name || "node");
+        deviceStatus.dataset.state = "connected";
+      } else {
+        deviceStatus.textContent = "disconnected";
+        deviceStatus.dataset.state = "disconnected";
+      }
+    }
+
+    btnConnect.addEventListener("click", async () => {
+      try {
+        appendLog("scanning for bluetooth peripheral…");
+        bluetoothDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: "Mailbox" }],
+          optionalServices: [NUS_SERVICE_UUID]
+        });
+
+        bluetoothDevice.addEventListener("gattserverdisconnected", () => {
+          appendLog("peripheral disconnected");
+          setInterfaceState(false);
+        });
+
+        appendLog("connecting to gatt service…");
+        const server = await bluetoothDevice.gatt.connect();
+        const service = await server.getPrimaryService(NUS_SERVICE_UUID);
+
+        rxChar = await service.getCharacteristic(NUS_RX_CHAR_UUID);
+        txChar = await service.getCharacteristic(NUS_TX_CHAR_UUID);
+
+        await txChar.startNotifications();
+        txChar.addEventListener("characteristicvaluechanged", (event) => {
+          const raw = decoder.decode(event.target.value).trim();
+          if (!raw) return;
+          try {
+            const data = JSON.parse(raw);
+            if (data.type === "telemetry") {
+              document.getElementById("valVRest").textContent = (data.v_rest / 1000).toFixed(2);
+              document.getElementById("valVSag").textContent = data.v_sag;
+              document.getElementById("valTilt").textContent = data.tilt.toFixed(1);
+              document.getElementById("valTemp").textContent = data.temp;
+              if (data.fw) document.getElementById("firmwareVersion").textContent = "fw " + data.fw;
+            } else {
+              appendLog("node: " + raw);
+            }
+          } catch (e) {
+            appendLog("node: " + raw);
+          }
+        });
+
+        appendLog("connected. telemetry stream active.");
+        setInterfaceState(true);
+      } catch (err) {
+        appendLog("connection failed: " + err.message);
+        deviceStatus.textContent = "error";
+        deviceStatus.dataset.state = "error";
+        setInterfaceState(false);
+      }
+    });
+
+    btnDisconnect.addEventListener("click", () => {
+      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+        bluetoothDevice.gatt.disconnect();
+      }
+    });
+
+    async function sendCommand(action) {
+      if (!rxChar) return;
+      const pin = document.getElementById("inputPin").value.trim();
+      const cmd = "PIN:" + pin + " CMD:" + action + "\n";
+      appendLog("transmit: " + cmd.trim());
+      await rxChar.writeValue(encoder.encode(cmd));
+    }
+
+    btnRecalibrate.addEventListener("click", () => sendCommand("RECALIBRATE"));
+    btnDfu.addEventListener("click", () => {
+      if (confirm("reboot device into uf2 bootloader?")) {
+        sendCommand("DFU");
+      }
+    });
+    btnSleep.addEventListener("click", () => sendCommand("SLEEP"));
+  </script>
+</body>
+</html>
