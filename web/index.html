@@ -132,6 +132,12 @@
     }
 
     btnConnect.addEventListener("click", async () => {
+      if (!navigator.bluetooth) {
+        appendLog("error: web bluetooth is not supported in this browser. Use Chrome, Edge, or Bluefy (iOS).");
+        deviceStatus.textContent = "unsupported browser";
+        deviceStatus.dataset.state = "error";
+        return;
+      }
       try {
         appendLog("scanning for bluetooth peripheral…");
         bluetoothDevice = await navigator.bluetooth.requestDevice({
