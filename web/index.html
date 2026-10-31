@@ -3,93 +3,117 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="WebBluetooth diagnostics, zero calibration, and DFU bootloader control for the LoRaWAN mailbox tilt sensor.">
-  <title>Mailbox Node Console</title>
+  <meta name="description" content="Web Bluetooth console for the LoRaWAN mailbox tilt sensor.">
+  <title>Mailbox Sensor Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;500&family=Host+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./app.css">
 </head>
 <body>
-  <header class="top-bar">
-    <div class="container top-bar-inner">
-      <span class="brand-mark">mailbox node console</span>
-      <span class="device-status" id="deviceStatus" data-state="disconnected">disconnected</span>
+  <!-- Browser Compatibility Modal -->
+  <div class="modal-backdrop" id="browserModal" hidden>
+    <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <h2 id="modalTitle" class="modal-title">Browser unsupported</h2>
+        <button type="button" class="btn-close" id="btnCloseModal" aria-label="Close dialog">✕</button>
+      </div>
+      <p class="modal-body">
+        Web Bluetooth is not supported in this browser. To communicate with the sensor, please open this site in Google Chrome, Microsoft Edge, or Bluefy on iOS.
+      </p>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btnDismissModal">Dismiss</button>
+      </div>
+    </div>
+  </div>
+
+  <header class="app-header">
+    <div class="container header-inner">
+      <span class="header-brand">Mailbox Sensor</span>
+      <div class="header-links">
+        <a href="https://github.com/veronoicc/mailbox-tilt-sensor" target="_blank" rel="noopener noreferrer">Source code</a>
+      </div>
     </div>
   </header>
 
-  <main class="app-shell">
-    <div class="container layout-stack">
-      
-      <!-- Connection Panel -->
-      <section class="panel" aria-labelledby="connect-heading">
-        <div class="panel-header">
-          <h2 class="panel-title" id="connect-heading">bluetooth connection</h2>
-          <span class="panel-meta">nordic uart service</span>
+  <main class="app-main">
+    <div class="container app-container">
+
+      <!-- Main Device Card -->
+      <section class="device-card" aria-labelledby="cardHeading">
+        <div class="card-header">
+          <h1 class="card-title" id="cardHeading">Mailbox Node</h1>
+          <span class="status-badge" id="deviceStatus" data-state="disconnected">Not connected</span>
         </div>
-        <p class="instruction-text">
-          Hold the mailbox flap open past 60 degrees for 15 seconds to initiate low-power maintenance advertising. The radio will listen for 60 seconds.
-        </p>
-        <button type="button" class="btn-primary" id="btnConnect">connect to mailbox sensor</button>
-        <button type="button" class="btn-secondary" id="btnDisconnect" style="display: none; width: 100%; margin-top: var(--space-xs);">disconnect</button>
+
+        <div class="card-body">
+          <!-- Disconnected View -->
+          <div id="disconnectedView">
+            <p class="card-desc">
+              Hold the mailbox flap open past 60° for 15 seconds to wake maintenance mode, then click Connect.
+            </p>
+            <button type="button" class="btn btn-primary" id="btnConnect">Connect</button>
+          </div>
+
+          <!-- Connected View -->
+          <div id="connectedView" hidden>
+            <div class="telemetry-table">
+              <div class="telemetry-row">
+                <span class="row-label">Rest battery voltage</span>
+                <span class="row-val"><span id="valVRest">--</span> V</span>
+              </div>
+              <div class="telemetry-row">
+                <span class="row-label">Voltage sag under load</span>
+                <span class="row-val"><span id="valVSag">--</span> mV</span>
+              </div>
+              <div class="telemetry-row">
+                <span class="row-label">Current pitch angle</span>
+                <span class="row-val"><span id="valTilt">--</span>°</span>
+              </div>
+              <div class="telemetry-row">
+                <span class="row-label">Internal temperature</span>
+                <span class="row-val"><span id="valTemp">--</span> °C</span>
+              </div>
+              <div class="telemetry-row">
+                <span class="row-label">Firmware</span>
+                <span class="row-val" id="firmwareVersion">--</span>
+              </div>
+            </div>
+
+            <div class="controls-section">
+              <div class="pin-field">
+                <label for="inputPin" class="field-label">Maintenance PIN</label>
+                <input type="password" id="inputPin" class="field-input" value="123456" autocomplete="current-password">
+              </div>
+
+              <div class="controls-buttons">
+                <button type="button" class="btn btn-secondary" id="btnRecalibrate">Calibrate zero</button>
+                <button type="button" class="btn btn-danger" id="btnDfu">Reboot to DFU</button>
+                <button type="button" class="btn btn-secondary" id="btnDisconnect">Disconnect</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <!-- Telemetry Panel -->
-      <section class="panel" aria-labelledby="telemetry-heading" id="telemetrySection" aria-live="polite">
-        <div class="panel-header">
-          <h2 class="panel-title" id="telemetry-heading">live instrument telemetry</h2>
-          <span class="panel-meta" id="firmwareVersion">fw --</span>
+      <!-- Compact Console Card -->
+      <section class="log-card" aria-labelledby="logHeading">
+        <div class="log-header">
+          <h2 class="log-title" id="logHeading">Console logs</h2>
+          <button type="button" class="log-clear-btn" id="btnClearLog">Clear</button>
         </div>
-        <div class="telemetry-grid">
-          <div class="telemetry-cell">
-            <span class="telemetry-label">rest voltage</span>
-            <span class="telemetry-value"><span id="valVRest">--</span><span class="telemetry-unit">v</span></span>
-          </div>
-          <div class="telemetry-cell">
-            <span class="telemetry-label">voltage sag under load</span>
-            <span class="telemetry-value"><span id="valVSag">--</span><span class="telemetry-unit">mv</span></span>
-          </div>
-          <div class="telemetry-cell">
-            <span class="telemetry-label">flap pitch angle</span>
-            <span class="telemetry-value"><span id="valTilt">--</span><span class="telemetry-unit">deg</span></span>
-          </div>
-          <div class="telemetry-cell">
-            <span class="telemetry-label">die temperature</span>
-            <span class="telemetry-value"><span id="valTemp">--</span><span class="telemetry-unit">c</span></span>
-          </div>
-        </div>
-      </section>
-
-      <!-- Maintenance Controls -->
-      <section class="panel" aria-labelledby="maintenance-heading" id="maintenanceSection">
-        <div class="panel-header">
-          <h2 class="panel-title" id="maintenance-heading">calibration and actions</h2>
-          <span class="panel-meta">authenticated</span>
-        </div>
-
-        <div class="auth-form">
-          <label for="inputPin" class="field-label">maintenance pin</label>
-          <input type="password" id="inputPin" class="field-input" value="123456" autocomplete="current-password">
-        </div>
-
-        <div class="actions-row">
-          <button type="button" class="btn-secondary" id="btnRecalibrate" disabled>calibrate zero horizon</button>
-          <button type="button" class="btn-danger" id="btnDfu" disabled>reboot to dfu bootloader</button>
-        </div>
-        <button type="button" class="btn-secondary" id="btnSleep" disabled style="width: 100%; margin-top: var(--space-xs);">disconnect and deep sleep</button>
-      </section>
-
-      <!-- Protocol Audit Log -->
-      <section class="panel" aria-labelledby="audit-heading">
-        <div class="panel-header">
-          <h2 class="panel-title" id="audit-heading">protocol log</h2>
-          <span class="panel-meta">events</span>
-        </div>
-        <div class="log-view" id="logView" role="log" aria-live="polite">awaiting connection…</div>
+        <div class="log-stream" id="logView" role="log" aria-live="polite">Ready.</div>
       </section>
 
     </div>
   </main>
+
+  <footer class="app-footer">
+    <div class="container footer-inner">
+      <span>Runs 100% in your browser. No data leaves your computer.</span>
+      <a href="https://github.com/veronoicc/mailbox-tilt-sensor" target="_blank" rel="noopener noreferrer">github.com/veronoicc/mailbox-tilt-sensor</a>
+    </div>
+  </footer>
 
   <script>
     const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
@@ -102,55 +126,76 @@
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
 
+    const browserModal = document.getElementById("browserModal");
+    const btnCloseModal = document.getElementById("btnCloseModal");
+    const btnDismissModal = document.getElementById("btnDismissModal");
     const deviceStatus = document.getElementById("deviceStatus");
+    const disconnectedView = document.getElementById("disconnectedView");
+    const connectedView = document.getElementById("connectedView");
     const btnConnect = document.getElementById("btnConnect");
     const btnDisconnect = document.getElementById("btnDisconnect");
     const btnRecalibrate = document.getElementById("btnRecalibrate");
     const btnDfu = document.getElementById("btnDfu");
-    const btnSleep = document.getElementById("btnSleep");
     const logView = document.getElementById("logView");
+    const btnClearLog = document.getElementById("btnClearLog");
 
     function appendLog(line) {
       logView.textContent += "\n" + line;
       logView.scrollTop = logView.scrollHeight;
     }
 
+    // Immediate browser support check on startup
+    window.addEventListener("DOMContentLoaded", () => {
+      if (!('bluetooth' in navigator)) {
+        browserModal.hidden = false;
+        deviceStatus.textContent = "Unsupported browser";
+        deviceStatus.dataset.state = "error";
+        appendLog("Notice: Web Bluetooth API is not supported in this browser.");
+      }
+    });
+
+    function dismissModal() {
+      browserModal.hidden = true;
+    }
+    btnCloseModal.addEventListener("click", dismissModal);
+    btnDismissModal.addEventListener("click", dismissModal);
+
+    btnClearLog.addEventListener("click", () => {
+      logView.textContent = "Console cleared.";
+    });
+
     function setInterfaceState(connected) {
-      btnRecalibrate.disabled = !connected;
-      btnDfu.disabled = !connected;
-      btnSleep.disabled = !connected;
-      btnConnect.style.display = connected ? "none" : "block";
-      btnDisconnect.style.display = connected ? "block" : "none";
+      disconnectedView.hidden = connected;
+      connectedView.hidden = !connected;
 
       if (connected) {
-        deviceStatus.textContent = "connected: " + (bluetoothDevice.name || "node");
+        deviceStatus.textContent = "Connected: " + (bluetoothDevice.name || "Mailbox Node");
         deviceStatus.dataset.state = "connected";
       } else {
-        deviceStatus.textContent = "disconnected";
+        deviceStatus.textContent = "Not connected";
         deviceStatus.dataset.state = "disconnected";
       }
     }
 
     btnConnect.addEventListener("click", async () => {
-      if (!navigator.bluetooth) {
-        appendLog("error: web bluetooth is not supported in this browser. Use Chrome, Edge, or Bluefy (iOS).");
-        deviceStatus.textContent = "unsupported browser";
-        deviceStatus.dataset.state = "error";
+      if (!('bluetooth' in navigator)) {
+        browserModal.hidden = false;
         return;
       }
+
       try {
-        appendLog("scanning for bluetooth peripheral…");
+        appendLog("Requesting Bluetooth device…");
         bluetoothDevice = await navigator.bluetooth.requestDevice({
           filters: [{ namePrefix: "Mailbox" }],
           optionalServices: [NUS_SERVICE_UUID]
         });
 
         bluetoothDevice.addEventListener("gattserverdisconnected", () => {
-          appendLog("peripheral disconnected");
+          appendLog("Device disconnected.");
           setInterfaceState(false);
         });
 
-        appendLog("connecting to gatt service…");
+        appendLog("Connecting to GATT service…");
         const server = await bluetoothDevice.gatt.connect();
         const service = await server.getPrimaryService(NUS_SERVICE_UUID);
 
@@ -168,21 +213,19 @@
               document.getElementById("valVSag").textContent = data.v_sag;
               document.getElementById("valTilt").textContent = data.tilt.toFixed(1);
               document.getElementById("valTemp").textContent = data.temp;
-              if (data.fw) document.getElementById("firmwareVersion").textContent = "fw " + data.fw;
+              if (data.fw) document.getElementById("firmwareVersion").textContent = "v" + data.fw;
             } else {
-              appendLog("node: " + raw);
+              appendLog("Device: " + raw);
             }
           } catch (e) {
-            appendLog("node: " + raw);
+            appendLog("Device: " + raw);
           }
         });
 
-        appendLog("connected. telemetry stream active.");
+        appendLog("Connected. Live telemetry stream active.");
         setInterfaceState(true);
       } catch (err) {
-        appendLog("connection failed: " + err.message);
-        deviceStatus.textContent = "error";
-        deviceStatus.dataset.state = "error";
+        appendLog("Connection canceled or failed: " + err.message);
         setInterfaceState(false);
       }
     });
@@ -197,17 +240,16 @@
       if (!rxChar) return;
       const pin = document.getElementById("inputPin").value.trim();
       const cmd = "PIN:" + pin + " CMD:" + action + "\n";
-      appendLog("transmit: " + cmd.trim());
+      appendLog("Sent: " + cmd.trim());
       await rxChar.writeValue(encoder.encode(cmd));
     }
 
     btnRecalibrate.addEventListener("click", () => sendCommand("RECALIBRATE"));
     btnDfu.addEventListener("click", () => {
-      if (confirm("reboot device into uf2 bootloader?")) {
+      if (confirm("Reboot sensor node into UF2 bootloader?")) {
         sendCommand("DFU");
       }
     });
-    btnSleep.addEventListener("click", () => sendCommand("SLEEP"));
   </script>
 </body>
 </html>
