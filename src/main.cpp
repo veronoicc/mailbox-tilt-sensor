@@ -7,29 +7,21 @@
 
 #define FIRMWARE_VERSION "1.1.0"
 
-// LoRaWAN Event Codes (Payload Byte 6)
 #define EVENT_MAIL_DELIVERED 0x01
 #define EVENT_MAILBOX_EMPTIED 0x02
 
-// Nordic UART Service (NUS) for WebBluetooth Maintenance
 BLEUart bleuart;
 
-// RadioLib Driver Instance
 SX1262 radio = new Module(PIN_LORA_NSS, PIN_LORA_DIO1, PIN_LORA_NRST, PIN_LORA_BUSY);
 LoRaWANNode node(&radio, &LORAWAN_BAND);
 
-// Software calibration offset for zero pitch angle
 static float g_tiltZeroOffset = 0.0f;
 static uint16_t g_lastVbatRest = 3000;
 static uint16_t g_lastVbatSag = 0;
 
-// Forward declarations
 static void enterDeepSleep();
 static void startBleMaintenance();
 
-// ==========================================
-// ROBUST HEX STRING PARSERS
-// ==========================================
 static uint64_t parseHex64(const char* str) {
   uint64_t val = 0;
   while (*str) {
@@ -66,9 +58,6 @@ static void parseHexBytes(const char* str, uint8_t* out, size_t maxBytes) {
   }
 }
 
-// ==========================================
-// LOW-LEVEL I2C REGISTER HELPERS
-// ==========================================
 static void writeReg(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(LIS3DH_I2C_ADDR);
   Wire.write(reg);
@@ -84,47 +73,28 @@ static uint8_t readReg(uint8_t reg) {
   return Wire.read();
 }
 
-// ==========================================
-// LIS3DH ACCELEROMETER INITIALIZATION
-// ==========================================
 void setupLIS3DH() {
   Wire.begin();
 
-  // 1. CTRL_REG1 (0x20): Low-Power Mode
-  // 0x1F = 1 Hz mode (~2 µA) if SENSOR_1HZ_ULTRA_LOW_POWER is set
-  // 0x2F = 10 Hz mode (~6 µA) default
+  // Set 1 Hz (~2 µA) or 10 Hz (~6 µA) low-power sample rate.
 #if SENSOR_1HZ_ULTRA_LOW_POWER
   writeReg(0x20, 0x1F);
 #else
   writeReg(0x20, 0x2F);
 #endif
 
-  // 2. CTRL_REG2 (0x21): High-Pass Filter with Reference Mode enabled for INT1 (0x09)
-  // Essential for Anti-Jam: Measures relative motion delta rather than absolute gravity!
+  // High-pass filter in reference mode detects motion deltas rather than static tilt.
   writeReg(0x21, 0x09);
+  writeReg(0x22, 0x40); // Route interrupt 1 to INT1 pin.
+  writeReg(0x23, 0x00); // +/-2g full scale.
+  writeReg(0x32, 0x0A); // Motion threshold: ~160 mg (~10-12 deg deflection).
+  writeReg(0x33, 0x01); // 1 sample duration filter.
+  writeReg(0x30, 0x2A); // Enable X/Y/Z high-event interrupt generation.
 
-  // 3. CTRL_REG3 (0x22): Route IA1 to INT1 pin (0x40)
-  writeReg(0x22, 0x40);
-
-  // 4. CTRL_REG4 (0x23): +/-2g range, low power (0x00)
-  writeReg(0x23, 0x00);
-
-  // 5. INT1_THS (0x32): Threshold = 10 (~160 mg motion)
-  writeReg(0x32, 0x0A);
-
-  // 6. INT1_DURATION (0x33): 1 sample duration (0x01)
-  writeReg(0x33, 0x01);
-
-  // 7. INT1_CFG (0x30): Enable XHIE, YHIE, ZHIE interrupt generation (0x2A)
-  writeReg(0x30, 0x2A);
-
-  // Read REFERENCE register (0x26) to latch baseline gravity vector
+  // Latch current resting orientation into the reference register.
   readReg(0x26);
 }
 
-// ==========================================
-// TILT PITCH ANGLE COMPUTATION
-// ==========================================
 float getPitchAngle() {
   Wire.beginTransmission(LIS3DH_I2C_ADDR);
   Wire.write(0x28 | 0x80); // Auto-increment from OUT_X_L
@@ -148,7 +118,6 @@ float getPitchAngle() {
   return (pitch < 0.0f) ? 0.0f : pitch;
 }
 
-// Read raw acceleration magnitude in Gs (used for knock detection)
 float getAccelerationMagnitude() {
   Wire.beginTransmission(LIS3DH_I2C_ADDR);
   Wire.write(0x28 | 0x80);
@@ -168,9 +137,6 @@ float getAccelerationMagnitude() {
   return sqrt(fx * fx + fy * fy + fz * fz);
 }
 
-// ==========================================
-// BATTERY VOLTAGE ADC MEASUREMENT
-// ==========================================
 uint16_t getBatteryMilliVolts() {
   analogReference(AR_INTERNAL); // 0.6V bandgap reference
   analogReadResolution(12);     // 12-bit ADC
@@ -189,7 +155,6 @@ uint16_t getBatteryMilliVolts() {
 #endif
 }
 
-// Read CPU internal die temperature
 int8_t getTemperatureC() {
 #if ENABLE_TEMPERATURE
   return (int8_t)round(readCPUTemperature());
@@ -198,39 +163,26 @@ int8_t getTemperatureC() {
 #endif
 }
 
-// ==========================================
-// ENTER ULTRA-LOW-POWER SLEEP (SYSTEM-OFF)
-// ==========================================
 static void enterDeepSleep() {
-  // 1. Put SX1262 LoRa radio into cold sleep (~0.16 µA)
   radio.sleep();
-
-  // 2. Clear LIS3DH interrupt latch by reading INT1_SRC
   readReg(0x31);
+  readReg(0x26); // Latch resting vector to prevent wake loops if flap remains propped open.
 
-  // 3. Re-zero Reference Register: Prevents wake loops on jammed flap
-  readReg(0x26);
-
-  // 4. Ensure all LEDs are tri-stated (zero current leak)
+  // Tri-state LEDs to prevent active-low parasitic draw.
   pinMode(LED_RED, INPUT);
   pinMode(LED_GREEN, INPUT);
   pinMode(LED_BLUE, INPUT);
 
-  // 5. Drop into Nordic System-Off mode (~2 µA sleep floor)
   systemOff(PIN_ACCEL_INT, 1);
 }
 
-// ==========================================
-// LORAWAN TRANSMISSION HELPER
-// ==========================================
 static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
   int16_t state = radio.begin();
   if (state != RADIOLIB_ERR_NONE) {
     return false;
   }
 
-  // Slashes active LoRa TX/RX current by ~40% using the hardware DC-DC buck converter!
-  radio.setRegulatorDCDC();
+  radio.setRegulatorDCDC(); // Switch module from LDO to internal buck regulator.
 
   uint64_t joinEUI = parseHex64(TTN_JOIN_EUI_HEX);
   uint64_t devEUI  = parseHex64(TTN_DEV_EUI_HEX);
@@ -250,14 +202,10 @@ static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
     return false;
   }
 
-  // Transmit Uplink (Unconfirmed)
   node.sendReceive(payload, len, fPort);
   return true;
 }
 
-// ==========================================
-// WEB-BLUETOOTH MAINTENANCE MODE (NUS)
-// ==========================================
 #if ENABLE_BLE_MAINTENANCE
 static void processBleCommand(const String& cmd) {
   String pinPrefix = "PIN:";
@@ -366,25 +314,20 @@ static void startBleMaintenance() {
 }
 #endif
 
-// ==========================================
-// KNOCK DETECTION ENGINE (WITH RAPID ABORT)
-// ==========================================
 #if ENABLE_KNOCK_DETECTION
 static bool checkForKnockPattern() {
   uint32_t windowStart = millis();
-  uint8_t knockCount = 1; // 1st knock already woke the interrupt
+  uint8_t knockCount = 1;
   uint32_t lastKnockTime = windowStart;
 
   while (millis() - windowStart < KNOCK_WINDOW_MS) {
-    // If no 2nd knock within KNOCK_ABORT_TIMEOUT_MS, abort early to save battery!
     if (knockCount == 1 && (millis() - windowStart > KNOCK_ABORT_TIMEOUT_MS)) {
-      return false;
+      return false; // Abort early on single transient vibrations.
     }
 
     float mag = getAccelerationMagnitude();
     uint32_t now = millis();
 
-    // Shock acceleration spike > 1.4G with 160ms debounce
     if (mag > 1.4f && (now - lastKnockTime > 160)) {
       knockCount++;
       lastKnockTime = now;
@@ -398,14 +341,10 @@ static bool checkForKnockPattern() {
 }
 #endif
 
-// ==========================================
-// MAIN SETUP (EXECUTED ON EVERY WAKEUP)
-// ==========================================
 void setup() {
-  // 1. Enable nRF52 internal DC-DC converter (slashes active CPU power by ~40%)
-  NRF_POWER->DCDCEN = 1;
+  NRF_POWER->DCDCEN = 1; // Enable DC-DC regulator for lower CPU active draw.
 
-  // 2. Shut off all onboard LEDs immediately (zero passive current leak)
+  // Tri-state LEDs immediately.
   pinMode(LED_RED, INPUT);
   pinMode(LED_GREEN, INPUT);
   pinMode(LED_BLUE, INPUT);
@@ -413,20 +352,13 @@ void setup() {
   pinMode(PIN_ACCEL_INT, INPUT);
   setupLIS3DH();
 
-  // Read pre-transmission resting battery voltage
   g_lastVbatRest = getBatteryMilliVolts();
-
-  // Initial tilt check
   float initialTilt = getPitchAngle();
 
-  // ----------------------------------------------------
-  // CASE 1: KNOCK PATTERN (Mailbox Emptied Detection)
-  // If flap is NOT tilting (<8 deg) but shock woke the INT
-  // ----------------------------------------------------
 #if ENABLE_KNOCK_DETECTION
+  // When an interrupt fires without tilt, check if it matches a knock pattern.
   if (initialTilt < 8.0f) {
     if (checkForKnockPattern()) {
-      // 4 Knocks confirmed! Transmit Mailbox Emptied event
       uint8_t payload[7];
       payload[0] = (uint8_t)((g_lastVbatRest < 2000 ? 0 : g_lastVbatRest - 2000) / 10);
       payload[1] = 0;
@@ -440,15 +372,11 @@ void setup() {
       delay(500);
       enterDeepSleep();
     } else {
-      // Stray vibration / door closing: Exit immediately to save power!
       enterDeepSleep();
     }
   }
 #endif
 
-  // ----------------------------------------------------
-  // CASE 2: FLAP OPENING (WITH EARLY SETTLING EXIT)
-  // ----------------------------------------------------
   uint32_t startTime = millis();
   float maxTilt = initialTilt;
   float currentTilt = initialTilt;
@@ -464,10 +392,8 @@ void setup() {
       openDurationMs += 100;
       settledCounter = 0;
     } else {
-      // Flap returned to resting position (<10 deg)
       settledCounter++;
-      // If flap has returned to rest and stayed still for 400ms, exit early!
-      // This saves ~2000ms of active CPU time on normal quick envelope drops!
+      // Exit early once the flap has returned to rest and stayed still for 400 ms.
       if (maxTilt >= TILT_TRIGGER_THRESHOLD_DEG && settledCounter >= 4) {
         break;
       }
@@ -476,10 +402,6 @@ void setup() {
   }
   float settledTilt = getPitchAngle();
 
-  // ----------------------------------------------------
-  // CASE 3: BLE MAINTENANCE TRIGGER (Hold Open > 60° for 15s)
-  // Only triggers if intentionally held wide open!
-  // ----------------------------------------------------
 #if ENABLE_BLE_MAINTENANCE
   if (currentTilt >= BLE_TRIGGER_ANGLE_DEG) {
     bool heldOpen = true;
@@ -496,17 +418,10 @@ void setup() {
   }
 #endif
 
-  // ----------------------------------------------------
-  // CASE 4: FALSE ALARM FILTER (< 12° opening angle)
-  // ----------------------------------------------------
   if (maxTilt < TILT_TRIGGER_THRESHOLD_DEG) {
     enterDeepSleep();
   }
 
-  // ----------------------------------------------------
-  // CASE 5: MAIL DELIVERY (Flap Opened or Jammed)
-  // Pack 7-Byte Telemetry Payload (FPort 1)
-  // ----------------------------------------------------
   int8_t tempC = getTemperatureC();
 
   uint8_t payload[7];
@@ -518,22 +433,16 @@ void setup() {
   payload[5] = (uint8_t)tempC;
   payload[6] = EVENT_MAIL_DELIVERED;
 
-  // Transmit Uplink
   sendLoRaWANPacket(payload, sizeof(payload), 1);
 
 #if ENABLE_BATTERY_SAG
-  // Measure loaded battery voltage immediately after transmit pulse
   uint16_t vbatLoad = getBatteryMilliVolts();
   g_lastVbatSag = (g_lastVbatRest > vbatLoad) ? (g_lastVbatRest - vbatLoad) : 0;
 #endif
 
-  // Brief cooldown to avoid double triggers if envelope is slow
   delay(1000);
-
-  // Return to deep sleep
   enterDeepSleep();
 }
 
 void loop() {
-  // Unused: nRF52 System-Off resets to setup() on wake
 }

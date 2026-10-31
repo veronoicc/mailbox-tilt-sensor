@@ -1,10 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-// ==========================================
-// HARDWARE PINOUT (Seeed XIAO nRF52840 + Wio-SX1262)
-// Do not modify unless using custom wiring.
-// ==========================================
+// Seeed XIAO nRF52840 + Wio-SX1262 pinout
 #ifndef PIN_LORA_NSS
 #define PIN_LORA_NSS    D1
 #endif
@@ -18,6 +15,6 @@
 #define PIN_LORA_DIO1   D6
 #endif
 
-// Tilt Sensor I2C & Interrupt Pin
-#define PIN_ACCEL_INT   D0    // INT1 pin on LIS3DHTR
-#define LIS3DH_I2C_ADDR 0x19  // 0x19: Grove default (SDO pulled high)
+// LIS3DHTR I2C and interrupt pin
+#define PIN_ACCEL_INT   D0
+#define LIS3DH_I2C_ADDR 0x19 // Grove default address (SDO pulled high)

@@ -1,8 +1,8 @@
-# Ultra-Low-Power LoRaWAN Mailbox Tilt Sensor
+# LoRaWAN Mailbox Tilt Sensor
 
-An open-source, ultra-low-power LoRaWAN sensor node designed for apartment metal mailbox banks (*Briefkastenanlagen*). It mounts on the moving mail slot flap, measures the exact tilt angle and duration to detect mail delivery, and uses accelerometer reference register latching to prevent infinite wake loops when catalogs wedge the flap open.
+A battery-powered LoRaWAN sensor node for shared metal mailbox banks (*Briefkastenanlagen*). It mounts on the moving mail flap, measures the flap opening angle and duration, and uses accelerometer reference register latching to prevent infinite wake loops when mail wedges the flap open.
 
-Designed for an **nRF52840 + SX1262** stack running on a direct **3.0V CR123A Lithium** rail, achieving a **~4–8 µA sleep floor** and **10+ years of operational runtime** down to sub-zero temperatures.
+Built on an **nRF52840 + SX1262** hardware stack powered directly from a **3.0V CR123A Lithium** cell, maintaining a **4 to 8 µA sleep current** down to sub-zero temperatures.
 
 ---
 
