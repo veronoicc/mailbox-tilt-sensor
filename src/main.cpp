@@ -19,9 +19,28 @@ static float g_tiltZeroOffset = 0.0f;
 static uint16_t g_lastVbatRest = 3000;
 static uint16_t g_lastVbatSag = 0;
 
+#if ENABLE_SESSION_PERSISTENCE
+#define SESSION_MAGIC 0xA55A1234
+__attribute__((section(".noinit"))) static uint32_t g_sessionMagic;
+__attribute__((section(".noinit"))) static uint8_t g_savedNonces[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
+__attribute__((section(".noinit"))) static uint8_t g_savedSession[RADIOLIB_LORAWAN_SESSION_BUF_SIZE];
+#endif
+
+#if ENABLE_WATCHDOG
+static void initWatchdog(uint32_t timeoutSec) {
+  NRF_WDT->CONFIG = (WDT_CONFIG_SLEEP_Pause << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV = (timeoutSec * 32768) - 1;
+  NRF_WDT->RREN = (WDT_RREN_RR0_Enabled << WDT_RREN_RR0_Pos);
+  NRF_WDT->TASKS_START = 1;
+}
+
+static inline void feedWatchdog() {
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+}
+#endif
+
 static void enterDeepSleep();
 static void startBleMaintenance();
-
 static uint64_t parseHex64(const char* str) {
   uint64_t val = 0;
   while (*str) {
@@ -177,12 +196,20 @@ static void enterDeepSleep() {
 }
 
 static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
+#if ENABLE_WATCHDOG
+  feedWatchdog();
+#endif
+
   int16_t state = radio.begin();
   if (state != RADIOLIB_ERR_NONE) {
     return false;
   }
 
   radio.setRegulatorDCDC(); // Switch module from LDO to internal buck regulator.
+
+#if ENABLE_ADR
+  node.setADR(true);
+#endif
 
   uint64_t joinEUI = parseHex64(TTN_JOIN_EUI_HEX);
   uint64_t devEUI  = parseHex64(TTN_DEV_EUI_HEX);
@@ -197,12 +224,41 @@ static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
 #endif
 
   node.beginOTAA(joinEUI, devEUI, nwkKey, appKey);
+
+#if ENABLE_SESSION_PERSISTENCE
+  if (g_sessionMagic == SESSION_MAGIC) {
+    node.setBufferNonces(g_savedNonces);
+    node.setBufferSession(g_savedSession);
+  }
+#endif
+
   state = node.activateOTAA();
   if (state != RADIOLIB_LORAWAN_NEW_SESSION && state != RADIOLIB_LORAWAN_SESSION_RESTORED && state != RADIOLIB_ERR_NONE) {
     return false;
   }
 
+#if ENABLE_SESSION_PERSISTENCE
+  if (state == RADIOLIB_LORAWAN_NEW_SESSION) {
+    memcpy(g_savedNonces, node.getBufferNonces(), RADIOLIB_LORAWAN_NONCES_BUF_SIZE);
+    memcpy(g_savedSession, node.getBufferSession(), RADIOLIB_LORAWAN_SESSION_BUF_SIZE);
+    g_sessionMagic = SESSION_MAGIC;
+  }
+#endif
+
+#if ENABLE_WATCHDOG
+  feedWatchdog();
+#endif
+
   node.sendReceive(payload, len, fPort);
+
+#if ENABLE_SESSION_PERSISTENCE
+  memcpy(g_savedSession, node.getBufferSession(), RADIOLIB_LORAWAN_SESSION_BUF_SIZE);
+#endif
+
+#if ENABLE_WATCHDOG
+  feedWatchdog();
+#endif
+
   return true;
 }
 
@@ -342,8 +398,12 @@ static bool checkForKnockPattern() {
 #endif
 
 void setup() {
-  NRF_POWER->DCDCEN = 1; // Enable DC-DC regulator for lower CPU active draw.
+#if ENABLE_WATCHDOG
+  initWatchdog(WATCHDOG_TIMEOUT_SECONDS);
+  feedWatchdog();
+#endif
 
+  NRF_POWER->DCDCEN = 1; // Enable DC-DC regulator for lower CPU active draw.
   // Tri-state LEDs immediately.
   pinMode(LED_RED, INPUT);
   pinMode(LED_GREEN, INPUT);

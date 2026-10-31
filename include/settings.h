@@ -11,6 +11,16 @@
 #define TTN_APP_KEY_HEX            "00112233445566778899AABBCCDDEEFF"
 // #define TTN_NWK_KEY_HEX         "00112233445566778899AABBCCDDEEFF"
 
+// LoRaWAN session persistence in retained RAM across deep sleep.
+#define ENABLE_SESSION_PERSISTENCE true
+
+// Hardware watchdog timer: resets CPU if communication freezes.
+#define ENABLE_WATCHDOG            true
+#define WATCHDOG_TIMEOUT_SECONDS   30
+
+// Adaptive Data Rate: allows TTN to lower TX power when signal is strong.
+#define ENABLE_ADR                 true
+
 // Feature toggles
 #define ENABLE_HEARTBEAT           true
 #define HEARTBEAT_INTERVAL_HOURS   24

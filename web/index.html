@@ -144,12 +144,32 @@
       logView.scrollTop = logView.scrollHeight;
     }
 
-    // Immediate browser support check on startup
+    // Immediate browser support check & URL parameter snapshot on startup
     window.addEventListener("DOMContentLoaded", () => {
+      // Check if telemetry snapshot parameters were passed via URL or NFC tag
+      const hashOrQuery = window.location.hash ? window.location.hash.substring(1) : window.location.search.substring(1);
+      if (hashOrQuery) {
+        const params = new URLSearchParams(hashOrQuery);
+        if (params.has('v') || params.has('tilt')) {
+          if (params.has('v')) document.getElementById('valVRest').textContent = (parseFloat(params.get('v')) / 1000).toFixed(2);
+          if (params.has('sag')) document.getElementById('valVSag').textContent = params.get('sag');
+          if (params.has('tilt')) document.getElementById('valTilt').textContent = parseFloat(params.get('tilt')).toFixed(1);
+          if (params.has('temp')) document.getElementById('valTemp').textContent = params.get('temp');
+          if (params.has('fw')) document.getElementById('firmwareVersion').textContent = 'v' + params.get('fw');
+          connectedView.hidden = false;
+          disconnectedView.hidden = true;
+          deviceStatus.textContent = "snapshot view";
+          deviceStatus.dataset.state = "connected";
+          appendLog("Loaded sensor telemetry snapshot from URL parameters.");
+        }
+      }
+
       if (!('bluetooth' in navigator)) {
         browserModal.hidden = false;
-        deviceStatus.textContent = "Unsupported browser";
-        deviceStatus.dataset.state = "error";
+        if (!hashOrQuery) {
+          deviceStatus.textContent = "Unsupported browser";
+          deviceStatus.dataset.state = "error";
+        }
         appendLog("Notice: Web Bluetooth API is not supported in this browser.");
       }
     });
