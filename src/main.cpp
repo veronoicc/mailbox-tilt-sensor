@@ -32,7 +32,11 @@ static uint16_t g_lastVbatSag = 0;
 static char g_lastPayloadHex[48] = "None";
 static const char* g_loraSessionStatus = "COLD_BOOT";
 static uint32_t g_liveKnockCount = 0;
+static bool g_imuDetected = false;
 
+static inline bool isUsbConnected() {
+  return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+}
 #if ENABLE_SESSION_PERSISTENCE
 #define SESSION_MAGIC 0xA55A1234
 __attribute__((section(".noinit"))) static uint32_t g_sessionMagic;
@@ -116,6 +120,22 @@ static uint8_t readReg(uint8_t reg) {
 
 void setupLIS3DH() {
   Wire.begin();
+  delay(15);
+
+  uint8_t id = readReg(0x0F);
+  if (id != 0x33) {
+    g_imuDetected = false;
+#if DEBUG_SERIAL
+    DBG_PRINTF("[IMU] LIS3DH not detected at 0x%02X (WHO_AM_I = 0x%02X, expected 0x33).\n", LIS3DH_I2C_ADDR, id);
+    DBG_PRINTLN("[IMU] Board is in bench mode without IMU. Plug LIS3DH to D4/D5 when ready.");
+#endif
+    return;
+  }
+
+  g_imuDetected = true;
+#if DEBUG_SERIAL
+  DBG_PRINTLN("[IMU] LIS3DH detected (WHO_AM_I = 0x33). Initializing registers...");
+#endif
 
   // Set 1 Hz (~2 µA) or 10 Hz (~6 µA) low-power sample rate.
 #if SENSOR_1HZ_ULTRA_LOW_POWER
@@ -138,6 +158,9 @@ void setupLIS3DH() {
 
 AccelData readAccel() {
   AccelData a = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  if (!g_imuDetected) {
+    return a;
+  }
   Wire.beginTransmission(LIS3DH_I2C_ADDR);
   Wire.write(0x28 | 0x80); // Auto-increment from OUT_X_L
   if (Wire.endTransmission(false) != 0) {
@@ -197,6 +220,16 @@ int8_t getTemperatureC() {
 }
 
 static void enterDeepSleep() {
+  // If USB is connected or IMU is absent, do NOT enter un-wakeable systemOff!
+  if (isUsbConnected() || !g_imuDetected) {
+#if DEBUG_SERIAL
+    DBG_PRINTLN("\n[BENCH MODE] Device will not deep-sleep: USB is plugged in or IMU is absent.");
+    DBG_PRINTLN("[BENCH MODE] Continuing WebBluetooth maintenance mode...");
+#endif
+    startBleMaintenance(BLE_TIMEOUT_SECONDS);
+    return;
+  }
+
 #if DEBUG_SERIAL
   DBG_PRINTLN("[POWER] Entering System-Off Deep Sleep (wake on INT1 pin)...");
   Serial.flush();
@@ -431,6 +464,7 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
   uint32_t lastActivityTime = millis();
   uint32_t lastTelemetry = 0;
   uint32_t lastBleKnockTime = 0;
+  uint32_t lastBlinkTime = 0;
   String rxBuffer = "";
 
   while (true) {
@@ -451,15 +485,30 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
       }
     }
 
-    if (Bluefruit.connected()) {
-      // Stays active indefinitely as long as another device is connected!
+    bool isConnected = Bluefruit.connected();
+
+    if (isConnected) {
       lastActivityTime = millis();
+      pinMode(LED_BLUE, OUTPUT);
+      digitalWrite(LED_BLUE, LED_STATE_ON); // Solid blue when connected
     } else {
-      // When not connected, enforce advertising inactivity window
-      if (millis() - lastActivityTime > ((uint32_t)advTimeoutSeconds * 1000UL)) {
-        break; // Inactivity window expired, shut down to deep sleep
+      // If USB is connected or IMU is absent, keep advertising indefinitely for bench testing
+      if (isUsbConnected() || !g_imuDetected) {
+        lastActivityTime = millis();
+        if (millis() - lastBlinkTime > 1500) {
+          lastBlinkTime = millis();
+          pinMode(LED_BLUE, OUTPUT);
+          digitalWrite(LED_BLUE, LED_STATE_ON);
+          delay(40);
+          digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+        }
+      } else {
+        if (millis() - lastActivityTime > ((uint32_t)advTimeoutSeconds * 1000UL)) {
+          break;
+        }
       }
     }
+
     AccelData a = readAccel();
     uint32_t now = millis();
 
@@ -467,12 +516,13 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
     if (a.mag > 1.4f && (now - lastBleKnockTime > 180)) {
       lastBleKnockTime = now;
       g_liveKnockCount++;
-      lastActivityTime = now; // Keep BLE alive if user is knocking/testing
+      lastActivityTime = now;
+
 #if DEBUG_SERIAL
       DBG_PRINTF("[BLE KNOCK] #%lu detected! Mag: %.2fg\n", g_liveKnockCount, a.mag);
 #endif
 
-      if (Bluefruit.connected()) {
+      if (isConnected) {
         bleuart.print("{\"type\":\"knock\",\"count\":");
         bleuart.print(g_liveKnockCount);
         bleuart.print(",\"mag\":");
@@ -481,34 +531,41 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
       }
     }
 
-    // Comprehensive telemetry stream every 1000 ms
-    if (Bluefruit.connected() && (now - lastTelemetry > 1000)) {
+    // Telemetry stream every 1000 ms
+    if (now - lastTelemetry > 1000) {
       lastTelemetry = now;
       int8_t temp = getTemperatureC();
       uint16_t vbat = getBatteryMilliVolts();
       uint32_t fcnt = node.getFCntUp();
 
-      bleuart.print("{\"type\":\"telemetry\"");
-      bleuart.print(",\"v_rest\":"); bleuart.print(g_lastVbatRest);
-      bleuart.print(",\"v_sag\":"); bleuart.print(g_lastVbatSag);
-      bleuart.print(",\"v_live\":"); bleuart.print(vbat);
-      bleuart.print(",\"temp\":"); bleuart.print(temp);
-      bleuart.print(",\"tilt\":"); bleuart.print(a.pitch, 1);
-      bleuart.print(",\"ax\":"); bleuart.print(a.x, 2);
-      bleuart.print(",\"ay\":"); bleuart.print(a.y, 2);
-      bleuart.print(",\"az\":"); bleuart.print(a.z, 2);
-      bleuart.print(",\"mag\":"); bleuart.print(a.mag, 2);
-      bleuart.print(",\"zero\":"); bleuart.print(g_tiltZeroOffset, 1);
-      bleuart.print(",\"fcnt\":"); bleuart.print(fcnt);
-      bleuart.print(",\"lora_session\":\""); bleuart.print(g_loraSessionStatus); bleuart.print("\"");
-      bleuart.print(",\"last_payload\":\""); bleuart.print(g_lastPayloadHex); bleuart.print("\"");
-      bleuart.print(",\"knocks\":"); bleuart.print(g_liveKnockCount);
-      bleuart.print(",\"fw\":\""); bleuart.print(FIRMWARE_VERSION); bleuart.print("\"");
-      bleuart.println("}");
+      if (isConnected) {
+        bleuart.print("{\"type\":\"telemetry\"");
+        bleuart.print(",\"v_rest\":"); bleuart.print(g_lastVbatRest);
+        bleuart.print(",\"v_sag\":"); bleuart.print(g_lastVbatSag);
+        bleuart.print(",\"v_live\":"); bleuart.print(vbat);
+        bleuart.print(",\"temp\":"); bleuart.print(temp);
+        bleuart.print(",\"tilt\":"); bleuart.print(a.pitch, 1);
+        bleuart.print(",\"ax\":"); bleuart.print(a.x, 2);
+        bleuart.print(",\"ay\":"); bleuart.print(a.y, 2);
+        bleuart.print(",\"az\":"); bleuart.print(a.z, 2);
+        bleuart.print(",\"mag\":"); bleuart.print(a.mag, 2);
+        bleuart.print(",\"zero\":"); bleuart.print(g_tiltZeroOffset, 1);
+        bleuart.print(",\"fcnt\":"); bleuart.print(fcnt);
+        bleuart.print(",\"lora_session\":\""); bleuart.print(g_loraSessionStatus); bleuart.print("\"");
+        bleuart.print(",\"last_payload\":\""); bleuart.print(g_lastPayloadHex); bleuart.print("\"");
+        bleuart.print(",\"knocks\":"); bleuart.print(g_liveKnockCount);
+        bleuart.print(",\"fw\":\""); bleuart.print(FIRMWARE_VERSION); bleuart.print("\"");
+        bleuart.println("}");
+      }
 
 #if DEBUG_SERIAL
-      DBG_PRINTF("[BLE STREAM] V_rest=%umV V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
-                 g_lastVbatRest, vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, g_liveKnockCount, fcnt);
+      if (isConnected) {
+        DBG_PRINTF("[BLE CONNECTED] V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
+                   vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, g_liveKnockCount, fcnt);
+      } else if (isUsbConnected() || !g_imuDetected) {
+        DBG_PRINTF("[BLE ADVERTISING] Device: '%s' | V_live: %u mV | Temp: %d °C | IMU: %s\n",
+                   BLE_DEVICE_NAME, vbat, temp, g_imuDetected ? "OK" : "NOT CONNECTED (plug into D4/D5)");
+      }
 #endif
     }
 
@@ -516,11 +573,12 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
   }
 
 #if DEBUG_SERIAL
-  DBG_PRINTLN("[BLE TIMEOUT] Inactivity period reached. Terminating BLE and sleeping.");
+  DBG_PRINTLN("[BLE TIMEOUT] Inactivity period reached. Terminating BLE and entering deep sleep.");
 #endif
 
   Bluefruit.disconnect(0);
   Bluefruit.Advertising.stop();
+  pinMode(LED_BLUE, INPUT);
   enterDeepSleep();
 }
 #endif
@@ -576,17 +634,32 @@ void setup() {
   feedWatchdog();
 #endif
 
+  // Blink Blue LED on power-up so the user immediately sees the board is running!
+  pinMode(LED_BLUE, OUTPUT);
+  digitalWrite(LED_BLUE, LED_STATE_ON);
+  delay(120);
+  digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+  delay(80);
+  digitalWrite(LED_BLUE, LED_STATE_ON);
+  delay(120);
+  digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+
 #if DEBUG_SERIAL
   Serial.begin(115200);
+  // Wait up to 2.5s for Serial Monitor if USB is plugged in
   uint32_t t0 = millis();
-  while (!Serial && (millis() - t0 < 1500)) { delay(10); }
+  while (!Serial && isUsbConnected() && (millis() - t0 < 2500)) {
+    delay(10);
+  }
   DBG_PRINTLN("\n==================================================");
   DBG_PRINTF("   MAILBOX TILT SENSOR [FW v%s]\n", FIRMWARE_VERSION);
   DBG_PRINTLN("   nRF52840 + SX1262 (EU868) + LIS3DH 3-Axis Accel");
+  DBG_PRINTF("   Power: %s\n", isUsbConnected() ? "USB 5V (Bench Test Mode)" : "CR123A Battery 3V");
   DBG_PRINTLN("==================================================");
 #endif
+
   uint32_t resetReason = NRF_POWER->RESETREAS;
-  NRF_POWER->RESETREAS = 0xFFFFFFFF; // Clear reset flags for subsequent wake cycles
+  NRF_POWER->RESETREAS = 0xFFFFFFFF; // Clear reset flags
   bool isWakeFromSleep = (resetReason & POWER_RESETREAS_OFF_Msk) != 0;
 
 #if DEBUG_SERIAL
@@ -594,10 +667,6 @@ void setup() {
 #endif
 
   NRF_POWER->DCDCEN = 1; // Enable DC-DC regulator for lower CPU active draw.
-  // Tri-state LEDs immediately.
-  pinMode(LED_RED, INPUT);
-  pinMode(LED_GREEN, INPUT);
-  pinMode(LED_BLUE, INPUT);
 
   pinMode(PIN_ACCEL_INT, INPUT);
   setupLIS3DH();
@@ -608,20 +677,31 @@ void setup() {
 #if DEBUG_SERIAL
   DBG_PRINTF("[INIT] Battery Rest Voltage: %u mV\n", g_lastVbatRest);
   DBG_PRINTF("[INIT] Internal Temp:        %d °C\n", getTemperatureC());
-  DBG_PRINTF("[INIT] LIS3DH Accel:         X=%.2fg, Y=%.2fg, Z=%.2fg (Mag=%.2fg)\n",
-             initial.x, initial.y, initial.z, initial.mag);
-  DBG_PRINTF("[INIT] Initial Pitch Angle:  %.1f deg (Zero offset: %.1f deg)\n", initial.pitch, g_tiltZeroOffset);
+  DBG_PRINTF("[INIT] LIS3DH Status:        %s\n", g_imuDetected ? "CONNECTED (OK)" : "DISCONNECTED (Bench Mode)");
+  if (g_imuDetected) {
+    DBG_PRINTF("[INIT] LIS3DH Accel:         X=%.2fg, Y=%.2fg, Z=%.2fg (Mag=%.2fg)\n",
+               initial.x, initial.y, initial.z, initial.mag);
+    DBG_PRINTF("[INIT] Initial Pitch Angle:  %.1f deg (Zero offset: %.1f deg)\n", initial.pitch, g_tiltZeroOffset);
+  }
 #endif
 
 #if ENABLE_BLE_MAINTENANCE
-  // On cold boot, power-up, or reboot: automatically advertise for 15s (or stays on while connected)
-  if (!isWakeFromSleep) {
+  // If USB is plugged in, or IMU is absent, or on cold boot/power-up:
+  if (!isWakeFromSleep || isUsbConnected() || !g_imuDetected) {
 #if DEBUG_SERIAL
-    DBG_PRINTLN("[BOOT] Power-on / reboot detected! Advertising WebBluetooth for 15 seconds...");
+    DBG_PRINTLN("[BOOT] Advertising WebBluetooth as 'Mailbox-Sensor'...");
 #endif
     startBleMaintenance(BLE_BOOT_ADVERTISE_SECONDS);
   }
 #endif
+
+  // If IMU is missing, enter safe idle rather than waking on noise
+  if (!g_imuDetected) {
+#if DEBUG_SERIAL
+    DBG_PRINTLN("[HALT] IMU not detected. Waiting in bench mode...");
+#endif
+    enterDeepSleep();
+  }
 #if ENABLE_KNOCK_DETECTION
   // When an interrupt fires without tilt, check if it matches a knock pattern.
   if (initial.pitch < 8.0f) {

@@ -369,10 +369,18 @@
         valBatHealth.textContent = "Depleted (<2.4V)";
       }
 
-      valTilt.textContent = data.tilt.toFixed(1);
-      valTiltTag.textContent = data.tilt.toFixed(1) + "°";
-      valAccel.textContent = `X:${data.ax.toFixed(2)} Y:${data.ay.toFixed(2)} Z:${data.az.toFixed(2)}`;
-      valMag.textContent = data.mag.toFixed(2);
+      const isImuAttached = (data.ax !== 0 || data.ay !== 0 || data.az !== 0 || data.mag !== 0);
+      if (isImuAttached) {
+        valTilt.textContent = data.tilt.toFixed(1);
+        valTiltTag.textContent = data.tilt.toFixed(1) + "°";
+        valAccel.textContent = `X:${data.ax.toFixed(2)} Y:${data.ay.toFixed(2)} Z:${data.az.toFixed(2)}`;
+        valMag.textContent = data.mag.toFixed(2);
+      } else {
+        valTilt.textContent = "0.0";
+        valTiltTag.textContent = "No IMU";
+        valAccel.textContent = "Not connected (D4/D5)";
+        valMag.textContent = "0.00";
+      }
       valZero.textContent = data.zero.toFixed(1);
 
       valKnocks.textContent = data.knocks;
