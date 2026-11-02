@@ -11,6 +11,9 @@
 #define EVENT_MAILBOX_EMPTIED 0x02
 #define EVENT_MANUAL_TEST     0x03
 
+#define XIAO_LED_ON           LOW
+#define XIAO_LED_OFF          HIGH
+
 #if DEBUG_SERIAL
   #define DBG_PRINT(...)    Serial.print(__VA_ARGS__)
   #define DBG_PRINTLN(...)  Serial.println(__VA_ARGS__)
@@ -465,7 +468,12 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
   uint32_t lastTelemetry = 0;
   uint32_t lastBleKnockTime = 0;
   uint32_t lastBlinkTime = 0;
+  uint32_t lastSerialAdvLog = 0;
   String rxBuffer = "";
+
+  // Ensure LED starts OFF
+  pinMode(LED_BLUE, OUTPUT);
+  digitalWrite(LED_BLUE, XIAO_LED_OFF);
 
   while (true) {
 #if ENABLE_WATCHDOG
@@ -490,17 +498,17 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
     if (isConnected) {
       lastActivityTime = millis();
       pinMode(LED_BLUE, OUTPUT);
-      digitalWrite(LED_BLUE, LED_STATE_ON); // Solid blue when connected
+      digitalWrite(LED_BLUE, XIAO_LED_ON); // Solid blue when connected
     } else {
       // If USB is connected or IMU is absent, keep advertising indefinitely for bench testing
       if (isUsbConnected() || !g_imuDetected) {
         lastActivityTime = millis();
-        if (millis() - lastBlinkTime > 1500) {
+        // Heartbeat pulse: LED is dark and flashes ON for 40ms every 2.5s
+        if (millis() - lastBlinkTime > 2500) {
           lastBlinkTime = millis();
-          pinMode(LED_BLUE, OUTPUT);
-          digitalWrite(LED_BLUE, LED_STATE_ON);
+          digitalWrite(LED_BLUE, XIAO_LED_ON);
           delay(40);
-          digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+          digitalWrite(LED_BLUE, XIAO_LED_OFF);
         }
       } else {
         if (millis() - lastActivityTime > ((uint32_t)advTimeoutSeconds * 1000UL)) {
@@ -562,8 +570,9 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
       if (isConnected) {
         DBG_PRINTF("[BLE CONNECTED] V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
                    vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, g_liveKnockCount, fcnt);
-      } else if (isUsbConnected() || !g_imuDetected) {
-        DBG_PRINTF("[BLE ADVERTISING] Device: '%s' | V_live: %u mV | Temp: %d °C | IMU: %s\n",
+      } else if (now - lastSerialAdvLog > 4000) {
+        lastSerialAdvLog = now;
+        DBG_PRINTF("[BLE ADVERTISING] Device: '%s' | V_live: %u mV | Temp: %d °C | IMU: %s (Connect via Web Console)\n",
                    BLE_DEVICE_NAME, vbat, temp, g_imuDetected ? "OK" : "NOT CONNECTED (plug into D4/D5)");
       }
 #endif
@@ -636,13 +645,13 @@ void setup() {
 
   // Blink Blue LED on power-up so the user immediately sees the board is running!
   pinMode(LED_BLUE, OUTPUT);
-  digitalWrite(LED_BLUE, LED_STATE_ON);
-  delay(120);
-  digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+  digitalWrite(LED_BLUE, XIAO_LED_ON);
+  delay(100);
+  digitalWrite(LED_BLUE, XIAO_LED_OFF);
   delay(80);
-  digitalWrite(LED_BLUE, LED_STATE_ON);
-  delay(120);
-  digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+  digitalWrite(LED_BLUE, XIAO_LED_ON);
+  delay(100);
+  digitalWrite(LED_BLUE, XIAO_LED_OFF);
 
 #if DEBUG_SERIAL
   Serial.begin(115200);
