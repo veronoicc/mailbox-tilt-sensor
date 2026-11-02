@@ -296,7 +296,10 @@
         appendLog("Scanning for Bluetooth peripheral...");
 
         bluetoothDevice = await navigator.bluetooth.requestDevice({
-          filters: [{ namePrefix: "Mailbox" }],
+          filters: [
+            { services: [NUS_SERVICE_UUID] },
+            { namePrefix: "Mailbox" }
+          ],
           optionalServices: [NUS_SERVICE_UUID]
         });
 

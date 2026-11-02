@@ -456,14 +456,17 @@ static void startBleMaintenance(uint32_t advTimeoutSeconds) {
   bleuart.begin();
 
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
-  Bluefruit.Advertising.addTxPower();
   Bluefruit.Advertising.addService(bleuart);
+  Bluefruit.Advertising.addName();
   Bluefruit.ScanResponse.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
   Bluefruit.Advertising.setInterval(32, 244);
-  Bluefruit.Advertising.setFastTimeout(advTimeoutSeconds);
-  Bluefruit.Advertising.start(advTimeoutSeconds);
+  Bluefruit.Advertising.setFastTimeout(30);
+  bool advOk = Bluefruit.Advertising.start(0); // 0 = continuous radio broadcast
 
+#if DEBUG_SERIAL
+  DBG_PRINTF("[BLE] Radio Advertising Broadcast: %s\n", advOk ? "ACTIVE (Broadcasting)" : "FAILED (Data Size Error)");
+#endif
   uint32_t lastActivityTime = millis();
   uint32_t lastTelemetry = 0;
   uint32_t lastBleKnockTime = 0;
