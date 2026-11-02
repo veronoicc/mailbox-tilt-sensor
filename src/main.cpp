@@ -62,8 +62,7 @@ struct AccelData {
 };
 
 static void enterDeepSleep();
-static void startBleMaintenance();
-
+static void startBleMaintenance(uint32_t advTimeoutSeconds);
 static uint64_t parseHex64(const char* str) {
   uint64_t val = 0;
   while (*str) {
@@ -406,10 +405,11 @@ static void processBleCommand(const String& cmd) {
   }
 }
 
-static void startBleMaintenance() {
+static void startBleMaintenance(uint32_t advTimeoutSeconds) {
 #if DEBUG_SERIAL
   DBG_PRINTLN("\n>>> Starting WebBluetooth Maintenance Mode <<<");
-  DBG_PRINTF("Device Name: %s | PIN: %s | Timeout: %d s\n", BLE_DEVICE_NAME, BLE_AUTH_PIN, BLE_TIMEOUT_SECONDS);
+  DBG_PRINTF("Device Name: %s | PIN: %s | Inactivity Timeout: %lu s\n", BLE_DEVICE_NAME, BLE_AUTH_PIN, advTimeoutSeconds);
+  DBG_PRINTLN("Mode: Stays awake indefinitely while client device is connected.");
 #endif
 
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
@@ -425,28 +425,41 @@ static void startBleMaintenance() {
   Bluefruit.ScanResponse.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
   Bluefruit.Advertising.setInterval(32, 244);
-  Bluefruit.Advertising.setFastTimeout(BLE_TIMEOUT_SECONDS);
-  Bluefruit.Advertising.start(BLE_TIMEOUT_SECONDS);
+  Bluefruit.Advertising.setFastTimeout(advTimeoutSeconds);
+  Bluefruit.Advertising.start(advTimeoutSeconds);
 
-  uint32_t bleStart = millis();
+  uint32_t lastActivityTime = millis();
   uint32_t lastTelemetry = 0;
   uint32_t lastBleKnockTime = 0;
   String rxBuffer = "";
 
-  while (millis() - bleStart < ((uint32_t)BLE_TIMEOUT_SECONDS * 1000UL)) {
+  while (true) {
+#if ENABLE_WATCHDOG
+    feedWatchdog();
+#endif
+
     while (bleuart.available()) {
       char c = (char)bleuart.read();
       if (c == '\n' || c == '\r') {
         if (rxBuffer.length() > 0) {
           processBleCommand(rxBuffer);
           rxBuffer = "";
-          bleStart = millis(); // Refresh timeout on valid interaction
+          lastActivityTime = millis(); // Refresh timeout on valid interaction
         }
       } else {
         rxBuffer += c;
       }
     }
 
+    if (Bluefruit.connected()) {
+      // Stays active indefinitely as long as another device is connected!
+      lastActivityTime = millis();
+    } else {
+      // When not connected, enforce advertising inactivity window
+      if (millis() - lastActivityTime > ((uint32_t)advTimeoutSeconds * 1000UL)) {
+        break; // Inactivity window expired, shut down to deep sleep
+      }
+    }
     AccelData a = readAccel();
     uint32_t now = millis();
 
@@ -454,8 +467,7 @@ static void startBleMaintenance() {
     if (a.mag > 1.4f && (now - lastBleKnockTime > 180)) {
       lastBleKnockTime = now;
       g_liveKnockCount++;
-      bleStart = now; // Keep BLE alive if user is knocking/testing
-
+      lastActivityTime = now; // Keep BLE alive if user is knocking/testing
 #if DEBUG_SERIAL
       DBG_PRINTF("[BLE KNOCK] #%lu detected! Mag: %.2fg\n", g_liveKnockCount, a.mag);
 #endif
@@ -573,9 +585,15 @@ void setup() {
   DBG_PRINTLN("   nRF52840 + SX1262 (EU868) + LIS3DH 3-Axis Accel");
   DBG_PRINTLN("==================================================");
 #endif
+  uint32_t resetReason = NRF_POWER->RESETREAS;
+  NRF_POWER->RESETREAS = 0xFFFFFFFF; // Clear reset flags for subsequent wake cycles
+  bool isWakeFromSleep = (resetReason & POWER_RESETREAS_OFF_Msk) != 0;
+
+#if DEBUG_SERIAL
+  DBG_PRINTF("[BOOT] Reset Reason: 0x%08X (WakeFromSleep=%s)\n", resetReason, isWakeFromSleep ? "YES" : "NO");
+#endif
 
   NRF_POWER->DCDCEN = 1; // Enable DC-DC regulator for lower CPU active draw.
-
   // Tri-state LEDs immediately.
   pinMode(LED_RED, INPUT);
   pinMode(LED_GREEN, INPUT);
@@ -595,6 +613,15 @@ void setup() {
   DBG_PRINTF("[INIT] Initial Pitch Angle:  %.1f deg (Zero offset: %.1f deg)\n", initial.pitch, g_tiltZeroOffset);
 #endif
 
+#if ENABLE_BLE_MAINTENANCE
+  // On cold boot, power-up, or reboot: automatically advertise for 15s (or stays on while connected)
+  if (!isWakeFromSleep) {
+#if DEBUG_SERIAL
+    DBG_PRINTLN("[BOOT] Power-on / reboot detected! Advertising WebBluetooth for 15 seconds...");
+#endif
+    startBleMaintenance(BLE_BOOT_ADVERTISE_SECONDS);
+  }
+#endif
 #if ENABLE_KNOCK_DETECTION
   // When an interrupt fires without tilt, check if it matches a knock pattern.
   if (initial.pitch < 8.0f) {
@@ -675,7 +702,7 @@ void setup() {
       delay(250);
     }
     if (heldOpen) {
-      startBleMaintenance();
+      startBleMaintenance(BLE_TIMEOUT_SECONDS);
     }
   }
 #endif

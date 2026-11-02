@@ -236,11 +236,11 @@ To diagnose the sensor, re-calibrate zero, or trigger firmware updates without d
 * *(Web Bluetooth requires a Secure Context (HTTPS), provided automatically by GitHub Pages).*
 
 ### 5.1 Triggering Maintenance Mode
-1. Open the mailbox flap all the way (**> 60°**) and hold it open continuously for **15 seconds**.
-   *(Normal mail drops and catalogs wedging the flap at 20°–40° will NOT trigger BLE mode, protecting the battery).*
-2. The node wakes Bluetooth LE advertising as **`Mailbox-Sensor`** for 60 seconds.
-3. Open the web app in Chrome / Edge (Android, PC, Mac) or Bluefy (iOS) and click **connect to mailbox sensor**.
+The node provides two ways to enter WebBluetooth maintenance mode:
+1. **Automatic Boot Window:** Whenever the device powers up (battery inserted, USB connected) or reboots, it automatically advertises as **`Mailbox-Sensor`** for **15 seconds**.
+2. **Flap Maintenance Trigger:** When already installed in the mailbox, hold the flap open past **60°** continuously for **15 seconds**.
 
+**Connection Persistence:** Once connected, the node **remains awake indefinitely** as long as the browser tab stays connected! As soon as you click *Disconnect* or close the browser (or if nobody connects within the advertising window), the node automatically shuts off the BLE radio and powers down to 2 µA System-Off sleep.
 ### 5.2 PIN Authentication & Actions
 All modifying actions are protected by a configurable PIN (defined in `settings.h`, default: `123456`):
 * **Comprehensive Live Telemetry:** Streams resting voltage, live voltage, voltage sag under LoRa load, core temperature, calibrated pitch angle, raw 3-axis accelerometer values ($X, Y, Z$), vector magnitude ($g$), zero horizon offset, live knock counts, LoRaWAN session status, uplink frame counter (`FCntUp`), and last transmitted hex payload.

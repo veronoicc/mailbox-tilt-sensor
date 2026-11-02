@@ -37,9 +37,13 @@
 #define KNOCK_WINDOW_MS            2200
 #define KNOCK_ABORT_TIMEOUT_MS     500
 
-// WebBluetooth maintenance: hold flap open past 60 degrees for 15s to advertise.
+// WebBluetooth maintenance:
+// - Advertises for 15s on power-up / reboot
+// - Advertises when holding flap open past 60 degrees for 15s
+// - Stays active indefinitely as long as a browser or client is connected
 #define ENABLE_BLE_MAINTENANCE     true
 #define BLE_DEVICE_NAME            "Mailbox-Sensor"
+#define BLE_BOOT_ADVERTISE_SECONDS 15
 #define BLE_HOLD_OPEN_SECONDS      15
 #define BLE_TIMEOUT_SECONDS        60
 #define BLE_AUTH_PIN               "123456"
