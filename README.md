@@ -243,11 +243,13 @@ To diagnose the sensor, re-calibrate zero, or trigger firmware updates without d
 
 ### 5.2 PIN Authentication & Actions
 All modifying actions are protected by a configurable PIN (defined in `settings.h`, default: `123456`):
-* **Live Telemetry:** Streams live battery rest voltage, voltage sag under load, temperature, and pitch angle in real-time.
+* **Comprehensive Live Telemetry:** Streams resting voltage, live voltage, voltage sag under LoRa load, core temperature, calibrated pitch angle, raw 3-axis accelerometer values ($X, Y, Z$), vector magnitude ($g$), zero horizon offset, live knock counts, LoRaWAN session status, uplink frame counter (`FCntUp`), and last transmitted hex payload.
+* **Knock Pattern Tracker:** Live hit indicator pulses on physical taps, displaying real-time hit counts and peak force ($g$) within the 2200 ms detection window.
+* **Test LoRaWAN Uplink:** Transmits an on-demand test packet directly from the browser to verify gateway reception, returning the frame counter, hex payload, and live battery sag.
 * **Zero Calibration:** Latches the current physical position as the new resting horizon ($0^\circ$).
-* **Reboot to DFU:** Reboots the nRF52840 into the UF2 bootloader for USB or OTA firmware updates.
+* **Reset Knocks:** Clears the knock tracker counter.
+* **Reboot to DFU:** Reboots the nRF52840 into the UF2 bootloader for USB firmware updates.
 * **Inactivity Auto-Sleep:** After 60 seconds of no Bluetooth traffic, the BLE radio completely shuts off and the node drops back to 2 µA System-Off sleep.
-
 ### 5.3 Automated GitHub Pages Deployment (No Extra Branch Needed)
 The web console in `web/` is automatically deployed via GitHub Actions:
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Web Bluetooth console for the LoRaWAN mailbox tilt sensor.">
+  <meta name="description" content="Web Bluetooth instrument console for the LoRaWAN mailbox tilt sensor.">
   <title>Mailbox Sensor Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,11 +15,11 @@
   <div class="modal-backdrop" id="browserModal" hidden>
     <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-header">
-        <h2 id="modalTitle" class="modal-title">Browser unsupported</h2>
-        <button type="button" class="btn-close" id="btnCloseModal" aria-label="Close dialog">✕</button>
+        <h2 class="modal-title" id="modalTitle">Browser notice</h2>
+        <button type="button" class="modal-close" id="btnCloseModal" aria-label="Close modal">&times;</button>
       </div>
       <p class="modal-body">
-        Web Bluetooth is not supported in this browser. To communicate with the sensor, please open this site in Google Chrome, Microsoft Edge, or Bluefy on iOS.
+        Web Bluetooth is not supported in this browser. To communicate with the sensor, open this site in Google Chrome, Microsoft Edge, or Bluefy on iOS.
       </p>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="btnDismissModal">Dismiss</button>
@@ -57,29 +57,122 @@
 
           <!-- Connected View -->
           <div id="connectedView" hidden>
-            <div class="telemetry-table">
-              <div class="telemetry-row">
-                <span class="row-label">Rest battery voltage</span>
-                <span class="row-val"><span id="valVRest">--</span> V</span>
+
+            <!-- Group 1: Power & Battery -->
+            <div class="telemetry-group">
+              <div class="group-header">
+                <span class="group-title">Power & Battery</span>
+                <span class="group-tag" id="valVLive">-- V</span>
               </div>
-              <div class="telemetry-row">
-                <span class="row-label">Voltage sag under load</span>
-                <span class="row-val"><span id="valVSag">--</span> mV</span>
-              </div>
-              <div class="telemetry-row">
-                <span class="row-label">Current pitch angle</span>
-                <span class="row-val"><span id="valTilt">--</span>°</span>
-              </div>
-              <div class="telemetry-row">
-                <span class="row-label">Internal temperature</span>
-                <span class="row-val"><span id="valTemp">--</span> °C</span>
-              </div>
-              <div class="telemetry-row">
-                <span class="row-label">Firmware</span>
-                <span class="row-val" id="firmwareVersion">--</span>
+              <div class="telemetry-table">
+                <div class="telemetry-row">
+                  <span class="row-label">Resting voltage</span>
+                  <span class="row-val"><span id="valVRest">--</span> V</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Voltage sag under load</span>
+                  <span class="row-val"><span id="valVSag">--</span> mV</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Battery status</span>
+                  <span class="row-val" id="valBatHealth">Optimal (>2.8V)</span>
+                </div>
               </div>
             </div>
 
+            <!-- Group 2: Accelerometer & Motion -->
+            <div class="telemetry-group">
+              <div class="group-header">
+                <span class="group-title">Motion & LIS3DH Tilt</span>
+                <span class="group-tag" id="valTiltTag">0.0°</span>
+              </div>
+              <div class="telemetry-table">
+                <div class="telemetry-row">
+                  <span class="row-label">Calibrated pitch angle</span>
+                  <span class="row-val"><span id="valTilt">--</span>°</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Raw acceleration (X, Y, Z)</span>
+                  <span class="row-val" id="valAccel">--</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Acceleration magnitude</span>
+                  <span class="row-val"><span id="valMag">--</span> g</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Zero horizon offset</span>
+                  <span class="row-val"><span id="valZero">--</span>°</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Group 3: Knock Detector Tracker -->
+            <div class="telemetry-group">
+              <div class="group-header">
+                <span class="group-title">Knock Pattern Detector</span>
+                <span class="knock-pulse" id="knockPulseIndicator" data-hit="idle">Ready</span>
+              </div>
+              <div class="telemetry-table">
+                <div class="telemetry-row">
+                  <span class="row-label">Live knock count</span>
+                  <span class="row-val"><span id="valKnocks">0</span> / 4 hits</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Peak knock force</span>
+                  <span class="row-val"><span id="valKnockPeak">--</span> g</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Trigger window</span>
+                  <span class="row-val">4 hits in 2200 ms</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Group 4: LoRaWAN & The Things Network -->
+            <div class="telemetry-group">
+              <div class="group-header">
+                <span class="group-title">LoRaWAN & Network</span>
+                <span class="group-tag" id="valLoraTag">Active</span>
+              </div>
+              <div class="telemetry-table">
+                <div class="telemetry-row">
+                  <span class="row-label">OTAA session status</span>
+                  <span class="row-val" id="valLoraSession">--</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Frame counter (FCntUp)</span>
+                  <span class="row-val" id="valFCnt">--</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Last uplink payload (HEX)</span>
+                  <span class="row-val code-val" id="valLastPayload">--</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Group 5: Environment & System -->
+            <div class="telemetry-group">
+              <div class="group-header">
+                <span class="group-title">System & Environment</span>
+                <span class="group-tag" id="valTempTag">-- °C</span>
+              </div>
+              <div class="telemetry-table">
+                <div class="telemetry-row">
+                  <span class="row-label">Internal core temperature</span>
+                  <span class="row-val"><span id="valTemp">--</span> °C</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Firmware build</span>
+                  <span class="row-val" id="firmwareVersion">v1.2.0</span>
+                </div>
+                <div class="telemetry-row">
+                  <span class="row-label">Hardware watchdog</span>
+                  <span class="row-val">30s active</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Controls & Actions -->
             <div class="controls-section">
               <div class="pin-field">
                 <label for="inputPin" class="field-label">Maintenance PIN</label>
@@ -88,6 +181,8 @@
 
               <div class="controls-buttons">
                 <button type="button" class="btn btn-secondary" id="btnRecalibrate">Calibrate zero</button>
+                <button type="button" class="btn btn-primary" id="btnTestUplink">Test LoRa uplink</button>
+                <button type="button" class="btn btn-secondary" id="btnResetKnocks">Reset knocks</button>
                 <button type="button" class="btn btn-danger" id="btnDfu">Reboot to DFU</button>
                 <button type="button" class="btn btn-secondary" id="btnDisconnect">Disconnect</button>
               </div>
@@ -123,6 +218,8 @@
     let bluetoothDevice = null;
     let rxChar = null;
     let txChar = null;
+    let rxBuffer = "";
+    let knockTimeout = null;
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
 
@@ -135,16 +232,39 @@
     const btnConnect = document.getElementById("btnConnect");
     const btnDisconnect = document.getElementById("btnDisconnect");
     const btnRecalibrate = document.getElementById("btnRecalibrate");
+    const btnTestUplink = document.getElementById("btnTestUplink");
+    const btnResetKnocks = document.getElementById("btnResetKnocks");
     const btnDfu = document.getElementById("btnDfu");
+    const inputPin = document.getElementById("inputPin");
     const logView = document.getElementById("logView");
     const btnClearLog = document.getElementById("btnClearLog");
+
+    // Telemetry fields
+    const valVRest = document.getElementById("valVRest");
+    const valVSag = document.getElementById("valVSag");
+    const valVLive = document.getElementById("valVLive");
+    const valBatHealth = document.getElementById("valBatHealth");
+    const valTilt = document.getElementById("valTilt");
+    const valTiltTag = document.getElementById("valTiltTag");
+    const valAccel = document.getElementById("valAccel");
+    const valMag = document.getElementById("valMag");
+    const valZero = document.getElementById("valZero");
+    const valKnocks = document.getElementById("valKnocks");
+    const valKnockPeak = document.getElementById("valKnockPeak");
+    const knockPulseIndicator = document.getElementById("knockPulseIndicator");
+    const valLoraSession = document.getElementById("valLoraSession");
+    const valLoraTag = document.getElementById("valLoraTag");
+    const valFCnt = document.getElementById("valFCnt");
+    const valLastPayload = document.getElementById("valLastPayload");
+    const valTemp = document.getElementById("valTemp");
+    const valTempTag = document.getElementById("valTempTag");
+    const firmwareVersion = document.getElementById("firmwareVersion");
 
     function appendLog(line) {
       logView.textContent += "\n" + line;
       logView.scrollTop = logView.scrollHeight;
     }
 
-    // Immediate browser support check on startup
     window.addEventListener("DOMContentLoaded", () => {
       if (!('bluetooth' in navigator)) {
         browserModal.hidden = false;
@@ -161,21 +281,8 @@
     btnDismissModal.addEventListener("click", dismissModal);
 
     btnClearLog.addEventListener("click", () => {
-      logView.textContent = "Console cleared.";
+      logView.textContent = "Logs cleared.";
     });
-
-    function setInterfaceState(connected) {
-      disconnectedView.hidden = connected;
-      connectedView.hidden = !connected;
-
-      if (connected) {
-        deviceStatus.textContent = "Connected: " + (bluetoothDevice.name || "Mailbox Node");
-        deviceStatus.dataset.state = "connected";
-      } else {
-        deviceStatus.textContent = "Not connected";
-        deviceStatus.dataset.state = "disconnected";
-      }
-    }
 
     btnConnect.addEventListener("click", async () => {
       if (!('bluetooth' in navigator)) {
@@ -184,18 +291,26 @@
       }
 
       try {
-        appendLog("Requesting Bluetooth device…");
+        deviceStatus.textContent = "connecting...";
+        deviceStatus.dataset.state = "disconnected";
+        appendLog("Scanning for Bluetooth peripheral...");
+
         bluetoothDevice = await navigator.bluetooth.requestDevice({
           filters: [{ namePrefix: "Mailbox" }],
           optionalServices: [NUS_SERVICE_UUID]
         });
 
-        bluetoothDevice.addEventListener("gattserverdisconnected", () => {
+        bluetoothDevice.addEventListener('gattserverdisconnected', () => {
+          deviceStatus.textContent = "disconnected";
+          deviceStatus.dataset.state = "disconnected";
+          disconnectedView.hidden = false;
+          connectedView.hidden = true;
+          rxChar = null;
+          txChar = null;
           appendLog("Device disconnected.");
-          setInterfaceState(false);
         });
 
-        appendLog("Connecting to GATT service…");
+        appendLog("Connecting to GATT service...");
         const server = await bluetoothDevice.gatt.connect();
         const service = await server.getPrimaryService(NUS_SERVICE_UUID);
 
@@ -203,51 +318,116 @@
         txChar = await service.getCharacteristic(NUS_TX_CHAR_UUID);
 
         await txChar.startNotifications();
-        txChar.addEventListener("characteristicvaluechanged", (event) => {
-          const raw = decoder.decode(event.target.value).trim();
-          if (!raw) return;
-          try {
-            const data = JSON.parse(raw);
-            if (data.type === "telemetry") {
-              document.getElementById("valVRest").textContent = (data.v_rest / 1000).toFixed(2);
-              document.getElementById("valVSag").textContent = data.v_sag;
-              document.getElementById("valTilt").textContent = data.tilt.toFixed(1);
-              document.getElementById("valTemp").textContent = data.temp;
-              if (data.fw) document.getElementById("firmwareVersion").textContent = "v" + data.fw;
-            } else {
-              appendLog("Device: " + raw);
-            }
-          } catch (e) {
-            appendLog("Device: " + raw);
-          }
-        });
+        txChar.addEventListener('characteristicvaluechanged', handleIncomingData);
 
+        deviceStatus.textContent = "connected";
+        deviceStatus.dataset.state = "connected";
+        disconnectedView.hidden = true;
+        connectedView.hidden = false;
         appendLog("Connected. Live telemetry stream active.");
-        setInterfaceState(true);
       } catch (err) {
-        appendLog("Connection canceled or failed: " + err.message);
-        setInterfaceState(false);
+        deviceStatus.textContent = "connection failed";
+        deviceStatus.dataset.state = "error";
+        appendLog("Connection error: " + err.message);
       }
     });
 
-    btnDisconnect.addEventListener("click", () => {
-      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
-        bluetoothDevice.gatt.disconnect();
+    function handleIncomingData(event) {
+      const value = event.target.value;
+      rxBuffer += decoder.decode(value, { stream: true });
+      let lines = rxBuffer.split("\n");
+      rxBuffer = lines.pop();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const data = JSON.parse(trimmed);
+          if (data.type === "telemetry") {
+            updateTelemetry(data);
+          } else if (data.type === "knock") {
+            updateKnockEvent(data);
+          } else {
+            appendLog(`[RECV] ${trimmed}`);
+          }
+        } catch (e) {
+          appendLog(`[RECV RAW] ${trimmed}`);
+        }
       }
-    });
+    }
+
+    function updateTelemetry(data) {
+      valVRest.textContent = (data.v_rest / 1000).toFixed(2);
+      valVSag.textContent = data.v_sag;
+      valVLive.textContent = (data.v_live / 1000).toFixed(2) + " V";
+
+      if (data.v_rest >= 2800) {
+        valBatHealth.textContent = "Optimal (>2.8V)";
+      } else if (data.v_rest >= 2400) {
+        valBatHealth.textContent = "Low (<2.8V)";
+      } else {
+        valBatHealth.textContent = "Depleted (<2.4V)";
+      }
+
+      valTilt.textContent = data.tilt.toFixed(1);
+      valTiltTag.textContent = data.tilt.toFixed(1) + "°";
+      valAccel.textContent = `X:${data.ax.toFixed(2)} Y:${data.ay.toFixed(2)} Z:${data.az.toFixed(2)}`;
+      valMag.textContent = data.mag.toFixed(2);
+      valZero.textContent = data.zero.toFixed(1);
+
+      valKnocks.textContent = data.knocks;
+
+      valLoraSession.textContent = data.lora_session;
+      valLoraTag.textContent = data.lora_session;
+      valFCnt.textContent = data.fcnt;
+      valLastPayload.textContent = data.last_payload || "None";
+
+      valTemp.textContent = data.temp;
+      valTempTag.textContent = data.temp + " °C";
+      firmwareVersion.textContent = "v" + data.fw;
+
+      appendLog(`[TELEMETRY] Pitch: ${data.tilt}° | V_live: ${(data.v_live/1000).toFixed(2)}V | Knocks: ${data.knocks} | FCnt: ${data.fcnt}`);
+    }
+
+    function updateKnockEvent(data) {
+      valKnocks.textContent = data.count;
+      valKnockPeak.textContent = data.mag.toFixed(2);
+      knockPulseIndicator.textContent = `Hit #${data.count} (${data.mag}g)`;
+      knockPulseIndicator.dataset.hit = "active";
+
+      clearTimeout(knockTimeout);
+      knockTimeout = setTimeout(() => {
+        knockPulseIndicator.dataset.hit = "idle";
+        knockPulseIndicator.textContent = "Ready";
+      }, 600);
+
+      appendLog(`*** [KNOCK HIT] #${data.count} registered | Peak force: ${data.mag}g ***`);
+    }
 
     async function sendCommand(action) {
-      if (!rxChar) return;
-      const pin = document.getElementById("inputPin").value.trim();
-      const cmd = "PIN:" + pin + " CMD:" + action + "\n";
-      appendLog("Sent: " + cmd.trim());
-      await rxChar.writeValue(encoder.encode(cmd));
+      if (!rxChar) {
+        appendLog("Error: Not connected to peripheral.");
+        return;
+      }
+      const pin = inputPin.value.trim() || "123456";
+      const cmd = `PIN:${pin} CMD:${action}\n`;
+      appendLog(`[SEND] CMD:${action}`);
+      try {
+        await rxChar.writeValue(encoder.encode(cmd));
+      } catch (err) {
+        appendLog(`[SEND ERROR] ${err.message}`);
+      }
     }
 
     btnRecalibrate.addEventListener("click", () => sendCommand("RECALIBRATE"));
-    btnDfu.addEventListener("click", () => {
-      if (confirm("Reboot sensor node into UF2 bootloader?")) {
-        sendCommand("DFU");
+    btnTestUplink.addEventListener("click", () => sendCommand("TEST_UPLINK"));
+    btnResetKnocks.addEventListener("click", () => sendCommand("RESET_KNOCKS"));
+    btnDfu.addEventListener("click", () => sendCommand("DFU"));
+
+    btnDisconnect.addEventListener("click", async () => {
+      await sendCommand("SLEEP");
+      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+        bluetoothDevice.gatt.disconnect();
       }
     });
   </script>

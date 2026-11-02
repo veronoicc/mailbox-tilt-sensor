@@ -5,10 +5,21 @@
 #include "settings.h"
 #include "config.h"
 
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.2.0"
 
 #define EVENT_MAIL_DELIVERED 0x01
 #define EVENT_MAILBOX_EMPTIED 0x02
+#define EVENT_MANUAL_TEST     0x03
+
+#if DEBUG_SERIAL
+  #define DBG_PRINT(...)    Serial.print(__VA_ARGS__)
+  #define DBG_PRINTLN(...)  Serial.println(__VA_ARGS__)
+  #define DBG_PRINTF(...)   Serial.printf(__VA_ARGS__)
+#else
+  #define DBG_PRINT(...)
+  #define DBG_PRINTLN(...)
+  #define DBG_PRINTF(...)
+#endif
 
 BLEUart bleuart;
 
@@ -18,6 +29,9 @@ LoRaWANNode node(&radio, &LORAWAN_BAND);
 static float g_tiltZeroOffset = 0.0f;
 static uint16_t g_lastVbatRest = 3000;
 static uint16_t g_lastVbatSag = 0;
+static char g_lastPayloadHex[48] = "None";
+static const char* g_loraSessionStatus = "COLD_BOOT";
+static uint32_t g_liveKnockCount = 0;
 
 #if ENABLE_SESSION_PERSISTENCE
 #define SESSION_MAGIC 0xA55A1234
@@ -39,8 +53,17 @@ static inline void feedWatchdog() {
 }
 #endif
 
+struct AccelData {
+  float x;      // in g
+  float y;      // in g
+  float z;      // in g
+  float pitch;  // calibrated pitch angle in degrees
+  float mag;    // vector magnitude in g
+};
+
 static void enterDeepSleep();
 static void startBleMaintenance();
+
 static uint64_t parseHex64(const char* str) {
   uint64_t val = 0;
   while (*str) {
@@ -114,46 +137,38 @@ void setupLIS3DH() {
   readReg(0x26);
 }
 
-float getPitchAngle() {
+AccelData readAccel() {
+  AccelData a = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
   Wire.beginTransmission(LIS3DH_I2C_ADDR);
   Wire.write(0x28 | 0x80); // Auto-increment from OUT_X_L
-  Wire.endTransmission(false);
-  Wire.requestFrom((uint8_t)LIS3DH_I2C_ADDR, (uint8_t)6);
-
-  if (Wire.available() < 6) {
-    return 0.0f;
+  if (Wire.endTransmission(false) != 0) {
+    return a;
+  }
+  if (Wire.requestFrom((uint8_t)LIS3DH_I2C_ADDR, (uint8_t)6) < 6) {
+    return a;
   }
 
-  int16_t x = Wire.read() | (Wire.read() << 8);
-  int16_t y = Wire.read() | (Wire.read() << 8);
-  int16_t z = Wire.read() | (Wire.read() << 8);
+  int16_t rawX = Wire.read() | (Wire.read() << 8);
+  int16_t rawY = Wire.read() | (Wire.read() << 8);
+  int16_t rawZ = Wire.read() | (Wire.read() << 8);
 
-  float fx = (float)x / 16384.0f;
-  float fy = (float)y / 16384.0f;
-  float fz = (float)z / 16384.0f;
+  a.x = (float)rawX / 16384.0f;
+  a.y = (float)rawY / 16384.0f;
+  a.z = (float)rawZ / 16384.0f;
+  a.mag = sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
 
-  float pitch = atan2(fx, sqrt(fy * fy + fz * fz)) * 180.0f / PI;
+  float pitch = atan2(a.x, sqrt(a.y * a.y + a.z * a.z)) * 180.0f / PI;
   pitch = fabs(pitch) - g_tiltZeroOffset;
-  return (pitch < 0.0f) ? 0.0f : pitch;
+  a.pitch = (pitch < 0.0f) ? 0.0f : pitch;
+  return a;
+}
+
+float getPitchAngle() {
+  return readAccel().pitch;
 }
 
 float getAccelerationMagnitude() {
-  Wire.beginTransmission(LIS3DH_I2C_ADDR);
-  Wire.write(0x28 | 0x80);
-  Wire.endTransmission(false);
-  Wire.requestFrom((uint8_t)LIS3DH_I2C_ADDR, (uint8_t)6);
-
-  if (Wire.available() < 6) return 1.0f;
-
-  int16_t x = Wire.read() | (Wire.read() << 8);
-  int16_t y = Wire.read() | (Wire.read() << 8);
-  int16_t z = Wire.read() | (Wire.read() << 8);
-
-  float fx = (float)x / 16384.0f;
-  float fy = (float)y / 16384.0f;
-  float fz = (float)z / 16384.0f;
-
-  return sqrt(fx * fx + fy * fy + fz * fz);
+  return readAccel().mag;
 }
 
 uint16_t getBatteryMilliVolts() {
@@ -183,6 +198,11 @@ int8_t getTemperatureC() {
 }
 
 static void enterDeepSleep() {
+#if DEBUG_SERIAL
+  DBG_PRINTLN("[POWER] Entering System-Off Deep Sleep (wake on INT1 pin)...");
+  Serial.flush();
+#endif
+
   radio.sleep();
   readReg(0x31);
   readReg(0x26); // Latch resting vector to prevent wake loops if flap remains propped open.
@@ -200,8 +220,26 @@ static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
   feedWatchdog();
 #endif
 
+  // Cache hex string for telemetry
+  char* p = g_lastPayloadHex;
+  for (size_t i = 0; i < len && i < 12; i++) {
+    p += sprintf(p, "%02X ", payload[i]);
+  }
+  if (p > g_lastPayloadHex) *(p - 1) = '\0';
+
+#if DEBUG_SERIAL
+  DBG_PRINTLN("\n----------------------------------------------");
+  DBG_PRINTLN("[LoRaWAN TX] Preparing Uplink Transmission");
+  DBG_PRINTF("[LoRaWAN TX] JoinEUI: %s | DevEUI: %s\n", TTN_JOIN_EUI_HEX, TTN_DEV_EUI_HEX);
+  DBG_PRINTF("[LoRaWAN TX] Retained RAM Session: %s\n",
+             (g_sessionMagic == SESSION_MAGIC) ? "VALID (Restoring Session)" : "COLD_BOOT (Full OTAA Join Needed)");
+#endif
+
   int16_t state = radio.begin();
   if (state != RADIOLIB_ERR_NONE) {
+#if DEBUG_SERIAL
+    DBG_PRINTF("[LoRaWAN TX ERROR] Radio begin failed: %d\n", state);
+#endif
     return false;
   }
 
@@ -233,7 +271,17 @@ static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
 #endif
 
   state = node.activateOTAA();
-  if (state != RADIOLIB_LORAWAN_NEW_SESSION && state != RADIOLIB_LORAWAN_SESSION_RESTORED && state != RADIOLIB_ERR_NONE) {
+  if (state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
+    g_loraSessionStatus = "RESTORED";
+  } else if (state == RADIOLIB_LORAWAN_NEW_SESSION) {
+    g_loraSessionStatus = "NEW_JOINED";
+  } else if (state == RADIOLIB_ERR_NONE) {
+    g_loraSessionStatus = "ACTIVE";
+  } else {
+    g_loraSessionStatus = "FAILED";
+#if DEBUG_SERIAL
+    DBG_PRINTF("[LoRaWAN TX ERROR] Activation failed with code %d\n", state);
+#endif
     return false;
   }
 
@@ -249,17 +297,35 @@ static bool sendLoRaWANPacket(uint8_t* payload, size_t len, uint8_t fPort) {
   feedWatchdog();
 #endif
 
-  node.sendReceive(payload, len, fPort);
+#if DEBUG_SERIAL
+  DBG_PRINTF("[LoRaWAN TX] Activation State: %s (code %d)\n", g_loraSessionStatus, state);
+  DBG_PRINTF("[LoRaWAN TX] FCntUp: %lu | FPort: %u | Length: %u bytes\n", node.getFCntUp(), fPort, len);
+  DBG_PRINTF("[LoRaWAN TX] Hex Payload: [%s]\n", g_lastPayloadHex);
+  DBG_PRINTLN("[LoRaWAN TX] Transmitting packet to Gateway...");
+#endif
+
+  int16_t sendState = node.sendReceive(payload, len, fPort);
 
 #if ENABLE_SESSION_PERSISTENCE
   memcpy(g_savedSession, node.getBufferSession(), RADIOLIB_LORAWAN_SESSION_BUF_SIZE);
+#endif
+
+#if ENABLE_BATTERY_SAG
+  uint16_t vbatLoad = getBatteryMilliVolts();
+  g_lastVbatSag = (g_lastVbatRest > vbatLoad) ? (g_lastVbatRest - vbatLoad) : 0;
+#endif
+
+#if DEBUG_SERIAL
+  DBG_PRINTF("[LoRaWAN TX] Result: %s (code %d)\n", (sendState == RADIOLIB_ERR_NONE) ? "SUCCESS" : "ERROR", sendState);
+  DBG_PRINTF("[LoRaWAN TX] Battery: Rest=%u mV | Load=%u mV | Sag=%u mV\n", g_lastVbatRest, vbatLoad, g_lastVbatSag);
+  DBG_PRINTLN("----------------------------------------------\n");
 #endif
 
 #if ENABLE_WATCHDOG
   feedWatchdog();
 #endif
 
-  return true;
+  return (sendState == RADIOLIB_ERR_NONE);
 }
 
 #if ENABLE_BLE_MAINTENANCE
@@ -277,6 +343,9 @@ static void processBleCommand(const String& cmd) {
   enteredPin.trim();
 
   if (enteredPin != BLE_AUTH_PIN) {
+#if DEBUG_SERIAL
+    DBG_PRINTF("[BLE AUTH FAIL] Invalid PIN attempted: %s\n", enteredPin.c_str());
+#endif
     bleuart.println("{\"status\":\"ERROR\",\"msg\":\"Authentication failed: Invalid PIN\"}");
     return;
   }
@@ -285,12 +354,43 @@ static void processBleCommand(const String& cmd) {
   action.trim();
   action.toUpperCase();
 
+#if DEBUG_SERIAL
+  DBG_PRINTF("[BLE COMMAND] Executing authorized action: %s\n", action.c_str());
+#endif
+
   if (action == "RECALIBRATE") {
     float rawPitch = getPitchAngle() + g_tiltZeroOffset;
     g_tiltZeroOffset = rawPitch;
     bleuart.print("{\"status\":\"OK\",\"msg\":\"Zero horizon calibrated\",\"zero_offset\":");
-    bleuart.print(g_tiltZeroOffset);
+    bleuart.print(g_tiltZeroOffset, 2);
     bleuart.println("}");
+#if DEBUG_SERIAL
+    DBG_PRINTF("[CALIBRATION] New zero horizon offset: %.2f deg\n", g_tiltZeroOffset);
+#endif
+  } else if (action == "TEST_UPLINK") {
+    bleuart.println("{\"status\":\"OK\",\"msg\":\"Triggering LoRaWAN test uplink...\"}");
+    uint8_t payload[7];
+    payload[0] = (uint8_t)((g_lastVbatRest < 2000 ? 0 : (g_lastVbatRest > 4550 ? 255 : (g_lastVbatRest - 2000) / 10)));
+    payload[1] = (uint8_t)(g_lastVbatSag / 5 > 255 ? 255 : g_lastVbatSag / 5);
+    payload[2] = (uint8_t)round(getPitchAngle());
+    payload[3] = (uint8_t)round(g_tiltZeroOffset);
+    payload[4] = 0;
+    payload[5] = (uint8_t)getTemperatureC();
+    payload[6] = EVENT_MANUAL_TEST;
+
+    bool ok = sendLoRaWANPacket(payload, sizeof(payload), 1);
+    bleuart.print("{\"status\":");
+    bleuart.print(ok ? "\"OK\"" : "\"ERROR\"");
+    bleuart.print(",\"msg\":\"LoRaWAN test packet finished\",\"fcnt\":");
+    bleuart.print(node.getFCntUp());
+    bleuart.print(",\"v_sag\":");
+    bleuart.print(g_lastVbatSag);
+    bleuart.print(",\"payload\":\"");
+    bleuart.print(g_lastPayloadHex);
+    bleuart.println("\"}");
+  } else if (action == "RESET_KNOCKS") {
+    g_liveKnockCount = 0;
+    bleuart.println("{\"status\":\"OK\",\"msg\":\"Knock counter reset to zero\"}");
   } else if (action == "DFU") {
     bleuart.println("{\"status\":\"OK\",\"msg\":\"Rebooting to UF2 Bootloader...\"}");
     delay(300);
@@ -302,11 +402,16 @@ static void processBleCommand(const String& cmd) {
     Bluefruit.Advertising.stop();
     enterDeepSleep();
   } else {
-    bleuart.println("{\"status\":\"ERROR\",\"msg\":\"Unknown action. Valid: RECALIBRATE, DFU, SLEEP\"}");
+    bleuart.println("{\"status\":\"ERROR\",\"msg\":\"Unknown action. Valid: RECALIBRATE, TEST_UPLINK, RESET_KNOCKS, DFU, SLEEP\"}");
   }
 }
 
 static void startBleMaintenance() {
+#if DEBUG_SERIAL
+  DBG_PRINTLN("\n>>> Starting WebBluetooth Maintenance Mode <<<");
+  DBG_PRINTF("Device Name: %s | PIN: %s | Timeout: %d s\n", BLE_DEVICE_NAME, BLE_AUTH_PIN, BLE_TIMEOUT_SECONDS);
+#endif
+
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.begin();
   Bluefruit.setTxPower(4);
@@ -325,6 +430,7 @@ static void startBleMaintenance() {
 
   uint32_t bleStart = millis();
   uint32_t lastTelemetry = 0;
+  uint32_t lastBleKnockTime = 0;
   String rxBuffer = "";
 
   while (millis() - bleStart < ((uint32_t)BLE_TIMEOUT_SECONDS * 1000UL)) {
@@ -334,35 +440,72 @@ static void startBleMaintenance() {
         if (rxBuffer.length() > 0) {
           processBleCommand(rxBuffer);
           rxBuffer = "";
-          bleStart = millis();
+          bleStart = millis(); // Refresh timeout on valid interaction
         }
       } else {
         rxBuffer += c;
       }
     }
 
-    if (Bluefruit.connected() && (millis() - lastTelemetry > 1000)) {
-      lastTelemetry = millis();
-      float currentTilt = getPitchAngle();
+    AccelData a = readAccel();
+    uint32_t now = millis();
+
+    // Live knock detection while connected over WebBluetooth
+    if (a.mag > 1.4f && (now - lastBleKnockTime > 180)) {
+      lastBleKnockTime = now;
+      g_liveKnockCount++;
+      bleStart = now; // Keep BLE alive if user is knocking/testing
+
+#if DEBUG_SERIAL
+      DBG_PRINTF("[BLE KNOCK] #%lu detected! Mag: %.2fg\n", g_liveKnockCount, a.mag);
+#endif
+
+      if (Bluefruit.connected()) {
+        bleuart.print("{\"type\":\"knock\",\"count\":");
+        bleuart.print(g_liveKnockCount);
+        bleuart.print(",\"mag\":");
+        bleuart.print(a.mag, 2);
+        bleuart.println("}");
+      }
+    }
+
+    // Comprehensive telemetry stream every 1000 ms
+    if (Bluefruit.connected() && (now - lastTelemetry > 1000)) {
+      lastTelemetry = now;
       int8_t temp = getTemperatureC();
       uint16_t vbat = getBatteryMilliVolts();
+      uint32_t fcnt = node.getFCntUp();
 
-      bleuart.print("{\"type\":\"telemetry\",\"v_rest\":");
-      bleuart.print(g_lastVbatRest);
-      bleuart.print(",\"v_sag\":");
-      bleuart.print(g_lastVbatSag);
-      bleuart.print(",\"v_live\":");
-      bleuart.print(vbat);
-      bleuart.print(",\"temp\":");
-      bleuart.print(temp);
-      bleuart.print(",\"tilt\":");
-      bleuart.print(currentTilt, 1);
-      bleuart.print(",\"fw\":\"");
-      bleuart.print(FIRMWARE_VERSION);
-      bleuart.println("\"}");
+      bleuart.print("{\"type\":\"telemetry\"");
+      bleuart.print(",\"v_rest\":"); bleuart.print(g_lastVbatRest);
+      bleuart.print(",\"v_sag\":"); bleuart.print(g_lastVbatSag);
+      bleuart.print(",\"v_live\":"); bleuart.print(vbat);
+      bleuart.print(",\"temp\":"); bleuart.print(temp);
+      bleuart.print(",\"tilt\":"); bleuart.print(a.pitch, 1);
+      bleuart.print(",\"ax\":"); bleuart.print(a.x, 2);
+      bleuart.print(",\"ay\":"); bleuart.print(a.y, 2);
+      bleuart.print(",\"az\":"); bleuart.print(a.z, 2);
+      bleuart.print(",\"mag\":"); bleuart.print(a.mag, 2);
+      bleuart.print(",\"zero\":"); bleuart.print(g_tiltZeroOffset, 1);
+      bleuart.print(",\"fcnt\":"); bleuart.print(fcnt);
+      bleuart.print(",\"lora_session\":\""); bleuart.print(g_loraSessionStatus); bleuart.print("\"");
+      bleuart.print(",\"last_payload\":\""); bleuart.print(g_lastPayloadHex); bleuart.print("\"");
+      bleuart.print(",\"knocks\":"); bleuart.print(g_liveKnockCount);
+      bleuart.print(",\"fw\":\""); bleuart.print(FIRMWARE_VERSION); bleuart.print("\"");
+      bleuart.println("}");
+
+#if DEBUG_SERIAL
+      DBG_PRINTF("[BLE STREAM] V_rest=%umV V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
+                 g_lastVbatRest, vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, g_liveKnockCount, fcnt);
+#endif
     }
-    delay(50);
+
+    delay(40);
   }
+
+#if DEBUG_SERIAL
+  DBG_PRINTLN("[BLE TIMEOUT] Inactivity period reached. Terminating BLE and sleeping.");
+#endif
 
   Bluefruit.disconnect(0);
   Bluefruit.Advertising.stop();
@@ -376,23 +519,41 @@ static bool checkForKnockPattern() {
   uint8_t knockCount = 1;
   uint32_t lastKnockTime = windowStart;
 
+#if DEBUG_SERIAL
+  DBG_PRINTF("[KNOCK] Initial vibration trigger! Starting %u ms pattern detection window...\n", KNOCK_WINDOW_MS);
+  DBG_PRINTF("[KNOCK] Hit #1 detected | Window Start: %lu ms\n", windowStart);
+#endif
+
   while (millis() - windowStart < KNOCK_WINDOW_MS) {
     if (knockCount == 1 && (millis() - windowStart > KNOCK_ABORT_TIMEOUT_MS)) {
+#if DEBUG_SERIAL
+      DBG_PRINTF("[KNOCK ABORT] Single transient vibration timed out after %u ms. Aborting.\n", KNOCK_ABORT_TIMEOUT_MS);
+#endif
       return false; // Abort early on single transient vibrations.
     }
 
-    float mag = getAccelerationMagnitude();
+    AccelData a = readAccel();
     uint32_t now = millis();
 
-    if (mag > 1.4f && (now - lastKnockTime > 160)) {
+    if (a.mag > 1.4f && (now - lastKnockTime > 160)) {
       knockCount++;
       lastKnockTime = now;
+#if DEBUG_SERIAL
+      DBG_PRINTF("[KNOCK] Hit #%u detected! Peak Mag: %.2fg | Delta: %lu ms\n", knockCount, a.mag, now - lastKnockTime);
+#endif
       if (knockCount >= KNOCK_COUNT_REQUIRED) {
+#if DEBUG_SERIAL
+        DBG_PRINTF("[KNOCK PATTERN MATCHED] %u knocks confirmed! Mailbox Emptied event triggered.\n", KNOCK_COUNT_REQUIRED);
+#endif
         return true;
       }
     }
     delay(20);
   }
+
+#if DEBUG_SERIAL
+  DBG_PRINTF("[KNOCK TIMEOUT] Window expired with only %u of %u knocks.\n", knockCount, KNOCK_COUNT_REQUIRED);
+#endif
   return false;
 }
 #endif
@@ -403,7 +564,18 @@ void setup() {
   feedWatchdog();
 #endif
 
+#if DEBUG_SERIAL
+  Serial.begin(115200);
+  uint32_t t0 = millis();
+  while (!Serial && (millis() - t0 < 1500)) { delay(10); }
+  DBG_PRINTLN("\n==================================================");
+  DBG_PRINTF("   MAILBOX TILT SENSOR [FW v%s]\n", FIRMWARE_VERSION);
+  DBG_PRINTLN("   nRF52840 + SX1262 (EU868) + LIS3DH 3-Axis Accel");
+  DBG_PRINTLN("==================================================");
+#endif
+
   NRF_POWER->DCDCEN = 1; // Enable DC-DC regulator for lower CPU active draw.
+
   // Tri-state LEDs immediately.
   pinMode(LED_RED, INPUT);
   pinMode(LED_GREEN, INPUT);
@@ -413,14 +585,25 @@ void setup() {
   setupLIS3DH();
 
   g_lastVbatRest = getBatteryMilliVolts();
-  float initialTilt = getPitchAngle();
+  AccelData initial = readAccel();
+
+#if DEBUG_SERIAL
+  DBG_PRINTF("[INIT] Battery Rest Voltage: %u mV\n", g_lastVbatRest);
+  DBG_PRINTF("[INIT] Internal Temp:        %d °C\n", getTemperatureC());
+  DBG_PRINTF("[INIT] LIS3DH Accel:         X=%.2fg, Y=%.2fg, Z=%.2fg (Mag=%.2fg)\n",
+             initial.x, initial.y, initial.z, initial.mag);
+  DBG_PRINTF("[INIT] Initial Pitch Angle:  %.1f deg (Zero offset: %.1f deg)\n", initial.pitch, g_tiltZeroOffset);
+#endif
 
 #if ENABLE_KNOCK_DETECTION
   // When an interrupt fires without tilt, check if it matches a knock pattern.
-  if (initialTilt < 8.0f) {
+  if (initial.pitch < 8.0f) {
+#if DEBUG_SERIAL
+    DBG_PRINTLN("[TRIGGER] Accel INT1 fired while flap is closed (<8 deg). Checking knock pattern...");
+#endif
     if (checkForKnockPattern()) {
       uint8_t payload[7];
-      payload[0] = (uint8_t)((g_lastVbatRest < 2000 ? 0 : g_lastVbatRest - 2000) / 10);
+      payload[0] = (uint8_t)((g_lastVbatRest < 2000 ? 0 : (g_lastVbatRest > 4550 ? 255 : (g_lastVbatRest - 2000) / 10)));
       payload[1] = 0;
       payload[2] = 0;
       payload[3] = 0;
@@ -437,9 +620,13 @@ void setup() {
   }
 #endif
 
+#if DEBUG_SERIAL
+  DBG_PRINTLN("[TRIGGER] Flap movement detected. Sampling flap motion profile...");
+#endif
+
   uint32_t startTime = millis();
-  float maxTilt = initialTilt;
-  float currentTilt = initialTilt;
+  float maxTilt = initial.pitch;
+  float currentTilt = initial.pitch;
   uint32_t openDurationMs = 0;
   uint8_t settledCounter = 0;
 
@@ -455,6 +642,9 @@ void setup() {
       settledCounter++;
       // Exit early once the flap has returned to rest and stayed still for 400 ms.
       if (maxTilt >= TILT_TRIGGER_THRESHOLD_DEG && settledCounter >= 4) {
+#if DEBUG_SERIAL
+        DBG_PRINTF("[MOTION] Flap settled at rest. Exiting sample loop early at %lu ms.\n", millis() - startTime);
+#endif
         break;
       }
     }
@@ -462,12 +652,24 @@ void setup() {
   }
   float settledTilt = getPitchAngle();
 
+#if DEBUG_SERIAL
+  DBG_PRINTF("[MOTION RESULT] Peak Tilt: %.1f° | Settled Tilt: %.1f° | Open Duration: %lu ms\n",
+             maxTilt, settledTilt, openDurationMs);
+#endif
+
 #if ENABLE_BLE_MAINTENANCE
   if (currentTilt >= BLE_TRIGGER_ANGLE_DEG) {
+#if DEBUG_SERIAL
+    DBG_PRINTF("[BLE HOLD CHECK] Flap open at %.1f° (>= %0.1f°). Checking %u second hold...\n",
+               currentTilt, BLE_TRIGGER_ANGLE_DEG, BLE_HOLD_OPEN_SECONDS);
+#endif
     bool heldOpen = true;
     while (millis() - startTime < ((uint32_t)BLE_HOLD_OPEN_SECONDS * 1000UL)) {
       if (getPitchAngle() < BLE_TRIGGER_ANGLE_DEG) {
         heldOpen = false;
+#if DEBUG_SERIAL
+        DBG_PRINTLN("[BLE HOLD CHECK] Flap released before hold timeout. Resuming normal delivery mode.");
+#endif
         break;
       }
       delay(250);
@@ -479,6 +681,9 @@ void setup() {
 #endif
 
   if (maxTilt < TILT_TRIGGER_THRESHOLD_DEG) {
+#if DEBUG_SERIAL
+    DBG_PRINTF("[FILTER] Peak tilt %.1f° < threshold %.1f°. Ignoring false alarm.\n", maxTilt, TILT_TRIGGER_THRESHOLD_DEG);
+#endif
     enterDeepSleep();
   }
 
@@ -494,11 +699,6 @@ void setup() {
   payload[6] = EVENT_MAIL_DELIVERED;
 
   sendLoRaWANPacket(payload, sizeof(payload), 1);
-
-#if ENABLE_BATTERY_SAG
-  uint16_t vbatLoad = getBatteryMilliVolts();
-  g_lastVbatSag = (g_lastVbatRest > vbatLoad) ? (g_lastVbatRest - vbatLoad) : 0;
-#endif
 
   delay(1000);
   enterDeepSleep();

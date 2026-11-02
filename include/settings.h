@@ -20,6 +20,9 @@
 
 // Adaptive Data Rate: allows TTN to lower TX power when signal is strong.
 #define ENABLE_ADR                 true
+// Serial debug console: streams telemetry, knocks, and LoRaWAN transactions over USB-C (115200 baud).
+// Set to true for live bench testing; set to false for deployment to maximize battery sleep time.
+#define DEBUG_SERIAL               true
 
 // Feature toggles
 #define ENABLE_HEARTBEAT           true
