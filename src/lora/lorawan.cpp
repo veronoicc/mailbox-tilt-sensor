@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "core/log.h"
 #include "core/power.h"
+#include "core/retry_policy.h"
 #include "core/state.h"
 #include "motion/imu.h"
 #include "lora/hex_key.h"
@@ -71,7 +72,13 @@ static uint8_t* signedNonces() {
 
 static constexpr uint32_t RETRY_DELAY_MS = 5000;  // well under the 30 s watchdog
 
-static bool sendPacket(uint8_t* payload, size_t len) {
+// Uplink() refusals that waiting won't fix (duty cycle needs far longer than RETRY_DELAY_MS).
+static bool permanentUplinkError(int16_t s) {
+  return s == RADIOLIB_ERR_UPLINK_UNAVAILABLE || s == RADIOLIB_ERR_INVALID_PORT ||
+         s == RADIOLIB_ERR_PACKET_TOO_LONG || s == RADIOLIB_ERR_DWELL_TIME_EXCEEDED;
+}
+
+static SendOutcome sendPacket(uint8_t* payload, size_t len) {
   watchdogFeed();
   formatHex(payload, len);
 
@@ -86,7 +93,7 @@ static bool sendPacket(uint8_t* payload, size_t len) {
                                 LORA_TCXO_VOLTAGE);
   if (state != RADIOLIB_ERR_NONE) {
     DBG_PRINTF("[LoRaWAN TX ERROR] Radio begin failed: %d\n", state);
-    return false;
+    return SendOutcome::NotSent;
   }
 
   g_radio.setRegulatorDCDC();  // Switch module from LDO to internal buck regulator.
@@ -128,7 +135,7 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   } else {
     g_sessionStatus = "FAILED";
     DBG_PRINTF("[LoRaWAN TX ERROR] Activation failed with code %d\n", state);
-    return false;
+    return SendOutcome::NotSent;
   }
 
 #if ENABLE_SESSION_PERSISTENCE
@@ -149,13 +156,18 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   size_t lenDown = 0;
   LoRaWANEvent_t eventUp = {};
   LoRaWANEvent_t eventDown = {};
-  int16_t sendState = g_node.sendReceive(payload, len, UPLINK_FPORT, dataDown, &lenDown, false, &eventUp, &eventDown);
-  if (sendState > 0 && lenDown > 0) {
-    g_dlPort = eventDown.fPort;
-    g_dlLen = lenDown < sizeof(g_dlBuf) ? lenDown : sizeof(g_dlBuf);
-    memcpy(g_dlBuf, dataDown, g_dlLen);
-    g_dlPending = true;
-    DBG_PRINTF("[LoRaWAN RX] Downlink FPort %u, %u bytes\n", g_dlPort, (unsigned)lenDown);
+  // Uplink and downlink run as two calls (what sendReceive does) so a failure can be pinned to a stage.
+  int16_t sendState = g_node.uplink(payload, len, UPLINK_FPORT, false, &eventUp);
+  bool transmitted = sendState == RADIOLIB_ERR_NONE;
+  if (transmitted) {
+    sendState = g_node.downlink(dataDown, &lenDown, &eventDown);
+    if (sendState > 0 && lenDown > 0) {
+      g_dlPort = eventDown.fPort;
+      g_dlLen = lenDown < sizeof(g_dlBuf) ? lenDown : sizeof(g_dlBuf);
+      memcpy(g_dlBuf, dataDown, g_dlLen);
+      g_dlPending = true;
+      DBG_PRINTF("[LoRaWAN RX] Downlink FPort %u, %u bytes\n", g_dlPort, (unsigned)lenDown);
+    }
   }
 
 #if ENABLE_SESSION_PERSISTENCE
@@ -173,7 +185,9 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   DBG_PRINTLN("----------------------------------------------\n");
 
   watchdogFeed();
-  return sent;
+  if (sent) return SendOutcome::Sent;
+  if (transmitted) return SendOutcome::MaybeSent;
+  return permanentUplinkError(sendState) ? SendOutcome::NotSentPermanent : SendOutcome::NotSent;
 }
 
 bool lorawanSend(UplinkMsg msg) {
@@ -184,12 +198,13 @@ bool lorawanSend(UplinkMsg msg) {
   if (!msg.hasTilt) msg.peakTiltDeg = msg.restTiltDeg = imuRead().pitch;
   uint8_t payload[UPLINK_SIZE];
   encodeUplink(msg, payload);
-  for (uint8_t attempt = 0;; attempt++) {
-    if (sendPacket(payload, UPLINK_SIZE)) return true;
-    if (attempt >= LORAWAN_MAX_RETRIES) return false;
-    DBG_PRINTF("[LoRaWAN TX] Retry %u/%u in %u ms\n", attempt + 1, (unsigned)LORAWAN_MAX_RETRIES, (unsigned)RETRY_DELAY_MS);
+  for (uint8_t attempts = 1;; attempts++) {
+    SendOutcome outcome = sendPacket(payload, UPLINK_SIZE);
+    if (outcome == SendOutcome::Sent) return true;
+    if (!sendShouldRetry(outcome, attempts, LORAWAN_MAX_RETRIES)) return false;
+    DBG_PRINTF("[LoRaWAN TX] Retry %u/%u in %u ms\n", attempts, (unsigned)LORAWAN_MAX_RETRIES, (unsigned)RETRY_DELAY_MS);
     watchdogFeed();
-    delay(RETRY_DELAY_MS);  // let the gateway/duty cycle recover; the retry rejoins if needed
+    delay(RETRY_DELAY_MS);
     watchdogFeed();
   }
 }

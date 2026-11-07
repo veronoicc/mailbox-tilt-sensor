@@ -21,7 +21,7 @@ Battery-powered LoRaWAN mailbox-flap tilt sensor. Seeed XIAO nRF52840 + Wio-SX12
 | LoRa region | `LORAWAN_BAND` in `include/settings.h` |
 
 ## Key Directories
-- `src/main.cpp`: wake flow only. `src/core/` (log, power/battery/watchdog, sleep, store, state, startup, heartbeat_policy), `src/motion/` (imu, knock, flap), `src/lora/` (lorawan, uplink, hex_key), `src/cmd/` (command table, parser, status snapshot, serial CLI), `src/ble/` (console / awake window, binary protocol).
+- `src/main.cpp`: wake flow only. `src/core/` (log, power/battery/watchdog, sleep, store, state, startup, heartbeat_policy, retry_policy), `src/motion/` (imu, knock, flap), `src/lora/` (lorawan, uplink, hex_key), `src/cmd/` (command table, parser, status snapshot, serial CLI), `src/ble/` (console / awake window, binary protocol).
 - `include/settings.h`: user knobs and feature toggles. `include/board.h`: fixed pins. `include/secrets.h`: credentials (gitignored).
 - `ttn/`: payload formatter and its Node test. `test/`: native Unity suites.
 - `web/`: static console. `index.html` loads `app.js`. `app.css` imports `tokens.css`, then `base.css`.
@@ -55,7 +55,7 @@ No lint or format tooling is configured. The first build needs network (git plat
 - The web UI uses Web Bluetooth, so it needs HTTPS and a Chromium browser. It loads Google Fonts from a CDN.
 
 ## Testing & QA
-- Native Unity tests (`pio test -e native`) cover `src/lora/uplink.cpp`, `src/lora/hex_key.cpp`, `src/cmd/cmd_parse.cpp`, `src/core/heartbeat_policy.cpp` and `src/ble/proto.cpp`; the formatters have `node --test ttn/formatters.test.js` and the web protocol has `node --test web/proto.test.js`. The byte vectors in `test_uplink`/formatter and in `test_proto`/`proto.test.js` mirror each other: keep them in sync. Everything else is verified with `pio run -e release` / `-e debug`; hardware behaviour needs a device.
+- Native Unity tests (`pio test -e native`) cover `src/lora/uplink.cpp`, `src/lora/hex_key.cpp`, `src/cmd/cmd_parse.cpp`, `src/core/heartbeat_policy.cpp`, `src/core/retry_policy.cpp` and `src/ble/proto.cpp`; the formatters have `node --test ttn/formatters.test.js` and the web protocol has `node --test web/proto.test.js`. The byte vectors in `test_uplink`/formatter and in `test_proto`/`proto.test.js` mirror each other: keep them in sync. Everything else is verified with `pio run -e release` / `-e debug`; hardware behaviour needs a device.
 - CI only deploys `web/`. A push to `main` touching `web/**` goes live immediately, so treat web edits as production.
 
 ## Known Gaps and Gotchas
