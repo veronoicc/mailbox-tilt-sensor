@@ -202,9 +202,10 @@ The node has one **awake window** that serves BLE, the USB serial CLI and TTN do
 
 ### 5.2 PIN Authentication & Actions
 All BLE commands are protected by a configurable PIN (`BLE_AUTH_PIN` in `include/secrets.h`, default: `123456`):
-* **Comprehensive Live Telemetry:** Streams resting voltage, live voltage, voltage sag under LoRa load, core temperature, calibrated pitch angle, raw 3-axis accelerometer values ($X, Y, Z$), vector magnitude ($g$), zero horizon offset, live knock counts, whether mail is inside, LoRaWAN session status, uplink frame counter (`FCntUp`), and last transmitted hex payload.
+* **Live Telemetry Stream:** After connecting, the node streams a binary telemetry frame every `BLE_STREAM_DEFAULT_MS` (100 ms): live voltage, core temperature, calibrated pitch, raw 3-axis acceleration, magnitude ($g$), knock count and whether mail is inside. `STREAM <ms>` changes the interval (`0` = off, clamped to `BLE_STREAM_MIN_MS`..`BLE_STREAM_MAX_MS`); it resets on every new connection. Nothing else is sent unprompted.
+* **Status on demand:** `STATUS [POWER|IMU|LORA|KNOCK|SYSTEM|ALL]` returns resting voltage and sag, the zero horizon offset, LoRaWAN session status, uplink frame counter (`FCntUp`), last transmitted hex payload, bench/USB state and the firmware version.
 * **Knock Pattern Tracker:** Live hit indicator pulses on physical taps, displaying real-time hit counts and peak force ($g$) within the 2200 ms detection window.
-* **Test LoRaWAN Uplink:** Transmits an on-demand test packet directly from the browser to verify gateway reception, returning the frame counter, hex payload, and live battery sag.
+* **Test LoRaWAN Uplink:** Transmits an on-demand test packet directly from the browser to verify gateway reception; the reply is followed by a `STATUS LORA` (frame counter, hex payload).
 * **Send Heartbeat:** Sends a heartbeat uplink on demand.
 * **Clear Mail State:** Marks the mailbox as empty and sends a `mail_cleared` uplink, the same as the knock pattern.
 * **Zero Calibration:** Latches the current physical position as the new resting horizon ($0^\circ$).
@@ -223,10 +224,12 @@ Every command lives in one table in [`src/cmd/cmd.cpp`](./src/cmd/cmd.cpp); BLE,
 | `RESET_KNOCKS` | Reset the knock counter | - |
 | `DFU` | Reboot into the UF2 bootloader | - |
 | `SLEEP` | End the awake window and sleep | - |
+| `STATUS [POWER\|IMU\|LORA\|KNOCK\|SYSTEM\|ALL]` | Print a status snapshot (default `ALL`) | - |
+| `STREAM <ms>` | BLE only: set the telemetry stream interval, `0` = off | - |
 | `HELP` | List the commands | - |
 
-* **BLE:** `PIN:<pin> CMD:<NAME>` (used by the web console).
-* **Serial CLI:** type the bare command, e.g. `test_uplink`, over USB serial (115200). It is active during the awake window and needs no PIN, since it needs physical USB access. Toggle with `ENABLE_SERIAL_CLI` in `settings.h`.
+* **BLE:** `PIN:<pin> CMD:<NAME> [args]`, e.g. `PIN:123456 CMD:STATUS IMU` or `PIN:123456 CMD:STREAM 100` (used by the web console). The device answers with binary frames (`0x01` telemetry, `0x02` knock, `0x03` reply, `0x04` status), defined in [`src/ble/proto.h`](./src/ble/proto.h) and mirrored by `web/proto.js`. Every state-changing command replies with a `REPLY` followed by the relevant `STATUS`.
+* **Serial CLI:** type the bare command, e.g. `test_uplink` or `status imu`, over USB serial (115200). Replies are text lines such as `[OK] Heartbeat sent` or `[STATUS imu] present=1 pitch=...`. It is active during the awake window and needs no PIN, since it needs physical USB access. Toggle with `ENABLE_SERIAL_CLI` in `settings.h`. Nothing is printed periodically.
 * **TTN downlink:** FPort 2, one opcode byte. In the TTN console use the formatter's `encodeDownlink` with `{"action":"heartbeat"}` or `{"action":"clear"}`.
 
 **Downlink timing:** LoRaWAN Class A devices only receive right after one of their own uplinks. A queued downlink is delivered after the node's next uplink (a heartbeat, a mail event, or the poll uplink sent when the flap-hold awake window opens), not instantly.
