@@ -2,6 +2,7 @@
 #include "lora/lorawan.h"
 #include <Arduino.h>
 #include <RadioLib.h>
+#include "core/store.h"
 #include <string.h>
 #include "board.h"
 #include "settings.h"
@@ -18,7 +19,6 @@ static char g_lastPayloadHex[48] = "None";
 #if ENABLE_SESSION_PERSISTENCE
 static constexpr uint32_t SESSION_MAGIC = 0xA55A1234;
 __attribute__((section(".noinit"))) static uint32_t g_sessionMagic;
-__attribute__((section(".noinit"))) static uint8_t g_savedNonces[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
 __attribute__((section(".noinit"))) static uint8_t g_savedSession[RADIOLIB_LORAWAN_SESSION_BUF_SIZE];
 #endif
 
@@ -29,6 +29,15 @@ static bool sessionSaved() {
   return false;
 #endif
 }
+
+// TTN rejects a reused DevNonce (LoRaWAN 1.0.4) and RAM is lost on power-off, so keep the nonces in flash.
+static const char* NONCES_FILE = "/lw_nonces";
+
+// One pending downlink from the RX windows, handed out by lorawanTakeDownlink().
+static uint8_t g_dlBuf[16];
+static size_t g_dlLen = 0;
+static uint8_t g_dlPort = 0;
+static bool g_dlPending = false;
 
 // First (up to) 12 bytes as space-separated "%02X".
 static void formatHex(const uint8_t* payload, size_t len) {
@@ -49,7 +58,9 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   DBG_PRINTF("[LoRaWAN TX] Retained RAM Session: %s\n",
              sessionSaved() ? "VALID (Restoring Session)" : "COLD_BOOT (Full OTAA Join Needed)");
 
-  int16_t state = g_radio.begin();
+  g_radio.setRfSwitchPins(PIN_LORA_RXEN, RADIOLIB_NC);
+  int16_t state = g_radio.begin(434.0, 125.0, 9, 7, RADIOLIB_SX126X_SYNC_WORD_PRIVATE, 10, 8,
+                                LORA_TCXO_VOLTAGE);
   if (state != RADIOLIB_ERR_NONE) {
     DBG_PRINTF("[LoRaWAN TX ERROR] Radio begin failed: %d\n", state);
     return false;
@@ -71,14 +82,15 @@ static bool sendPacket(uint8_t* payload, size_t len) {
 
   g_node.beginOTAA(joinEUI, devEUI, nwkKey, appKey);
 
+  uint8_t nonces[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
+  if (storeRead(NONCES_FILE, nonces, sizeof(nonces))) g_node.setBufferNonces(nonces);
 #if ENABLE_SESSION_PERSISTENCE
-  if (sessionSaved()) {
-    g_node.setBufferNonces(g_savedNonces);
-    g_node.setBufferSession(g_savedSession);
-  }
+  if (sessionSaved()) g_node.setBufferSession(g_savedSession);
 #endif
 
   state = g_node.activateOTAA();
+  // Save after every join attempt, even a failed one: the request already burned its DevNonce.
+  if (state != RADIOLIB_LORAWAN_SESSION_RESTORED) storeWrite(NONCES_FILE, g_node.getBufferNonces(), RADIOLIB_LORAWAN_NONCES_BUF_SIZE);
   if (state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
     g_sessionStatus = "RESTORED";
   } else if (state == RADIOLIB_LORAWAN_NEW_SESSION) {
@@ -93,7 +105,6 @@ static bool sendPacket(uint8_t* payload, size_t len) {
 
 #if ENABLE_SESSION_PERSISTENCE
   if (state == RADIOLIB_LORAWAN_NEW_SESSION) {
-    memcpy(g_savedNonces, g_node.getBufferNonces(), RADIOLIB_LORAWAN_NONCES_BUF_SIZE);
     memcpy(g_savedSession, g_node.getBufferSession(), RADIOLIB_LORAWAN_SESSION_BUF_SIZE);
     g_sessionMagic = SESSION_MAGIC;
   }
@@ -106,7 +117,18 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   DBG_PRINTF("[LoRaWAN TX] Hex Payload: [%s]\n", g_lastPayloadHex);
   DBG_PRINTLN("[LoRaWAN TX] Transmitting packet to Gateway...");
 
-  int16_t sendState = g_node.sendReceive(payload, len, UPLINK_FPORT);
+  uint8_t dataDown[255];  // max LoRaWAN payload; RadioLib copies the whole downlink without a bound check
+  size_t lenDown = 0;
+  LoRaWANEvent_t eventUp = {};
+  LoRaWANEvent_t eventDown = {};
+  int16_t sendState = g_node.sendReceive(payload, len, UPLINK_FPORT, dataDown, &lenDown, false, &eventUp, &eventDown);
+  if (sendState > 0 && lenDown > 0) {
+    g_dlPort = eventDown.fPort;
+    g_dlLen = lenDown < sizeof(g_dlBuf) ? lenDown : sizeof(g_dlBuf);
+    memcpy(g_dlBuf, dataDown, g_dlLen);
+    g_dlPending = true;
+    DBG_PRINTF("[LoRaWAN RX] Downlink FPort %u, %u bytes\n", g_dlPort, (unsigned)lenDown);
+  }
 
 #if ENABLE_SESSION_PERSISTENCE
   memcpy(g_savedSession, g_node.getBufferSession(), RADIOLIB_LORAWAN_SESSION_BUF_SIZE);
@@ -116,19 +138,32 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   batterySampleSag();
 #endif
 
-  DBG_PRINTF("[LoRaWAN TX] Result: %s (code %d)\n", (sendState == RADIOLIB_ERR_NONE) ? "SUCCESS" : "ERROR", sendState);
+  // -1116 (NO_DOWNLINK) just means the uplink went out and no downlink came back, which is normal for unconfirmed uplinks.
+  bool sent = sendState >= 0 || sendState == RADIOLIB_LORAWAN_NO_DOWNLINK;
+  DBG_PRINTF("[LoRaWAN TX] Result: %s (code %d)\n", sent ? "SUCCESS" : "ERROR", sendState);
   DBG_PRINTF("[LoRaWAN TX] Battery: Rest=%u mV | Sag=%u mV\n", batteryRestMv(), batterySagMv());
   DBG_PRINTLN("----------------------------------------------\n");
 
   watchdogFeed();
-  return sendState == RADIOLIB_ERR_NONE;
+  return sent;
 }
 
-bool lorawanSendEvent(UplinkEvent event, float peakTiltDeg, float restTiltDeg, uint32_t openMs) {
-  UplinkData d = {batteryRestMv(), batterySagMv(), peakTiltDeg, restTiltDeg, openMs, temperatureC(), event};
-  uint8_t payload[UPLINK_SIZE];
-  encodeUplink(d, payload);
-  return sendPacket(payload, sizeof(payload));
+bool lorawanSend(UplinkMsg msg) {
+  msg.batteryMv = batteryRestMv();
+  msg.sagMv = batterySagMv();
+  msg.temperatureC = temperatureC();
+  uint8_t payload[UPLINK_MAX_SIZE];
+  size_t len = encodeUplink(msg, payload);
+  return sendPacket(payload, len);
+}
+
+bool lorawanTakeDownlink(uint8_t& fPort, uint8_t* buf, size_t cap, size_t& len) {
+  if (!g_dlPending) return false;
+  g_dlPending = false;
+  fPort = g_dlPort;
+  len = g_dlLen < cap ? g_dlLen : cap;
+  memcpy(buf, g_dlBuf, len);
+  return true;
 }
 
 uint32_t lorawanFrameCounter() {
