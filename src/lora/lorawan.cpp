@@ -48,6 +48,24 @@ static void formatHex(const uint8_t* payload, size_t len) {
   if (p > g_lastPayloadHex) *(p - 1) = '\0';
 }
 
+// RadioLib 6.6 fills the nonces buffer header (version, mode, class, plan, key checksum) only after a
+// SUCCESSFUL join, so setBufferNonces() would reject the buffer saved after a failed join and the
+// DevNonce would restart at 0. Write the header ourselves, then let RadioLib re-sign the buffer.
+// beginOTAA() leaves RadioLib's keyCheckSum at 0 (clearNonces() runs after it is computed), so the
+// checksum field is 0; revisit this if RadioLib is upgraded past 6.6.x.
+static uint8_t* signedNonces() {
+  uint8_t* n = g_node.getBufferNonces();
+  n[RADIOLIB_LORAWAN_NONCES_VERSION] = RADIOLIB_LORAWAN_NONCES_VERSION_VAL >> 8;
+  n[RADIOLIB_LORAWAN_NONCES_VERSION + 1] = RADIOLIB_LORAWAN_NONCES_VERSION_VAL & 0xFF;
+  n[RADIOLIB_LORAWAN_NONCES_MODE] = RADIOLIB_LORAWAN_MODE_OTAA >> 8;
+  n[RADIOLIB_LORAWAN_NONCES_MODE + 1] = RADIOLIB_LORAWAN_MODE_OTAA & 0xFF;
+  n[RADIOLIB_LORAWAN_NONCES_CLASS] = RADIOLIB_LORAWAN_CLASS_A;
+  n[RADIOLIB_LORAWAN_NONCES_PLAN] = LORAWAN_BAND.bandNum;
+  n[RADIOLIB_LORAWAN_NONCES_CHECKSUM] = 0;
+  n[RADIOLIB_LORAWAN_NONCES_CHECKSUM + 1] = 0;
+  return g_node.getBufferNonces();  // recomputes the signature over the patched header
+}
+
 static bool sendPacket(uint8_t* payload, size_t len) {
   watchdogFeed();
   formatHex(payload, len);
@@ -83,14 +101,19 @@ static bool sendPacket(uint8_t* payload, size_t len) {
   g_node.beginOTAA(joinEUI, devEUI, nwkKey, appKey);
 
   uint8_t nonces[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
-  if (storeRead(NONCES_FILE, nonces, sizeof(nonces))) g_node.setBufferNonces(nonces);
+  if (storeRead(NONCES_FILE, nonces, sizeof(nonces))) {
+    int16_t ns = g_node.setBufferNonces(nonces);
+    DBG_PRINTF("[LoRaWAN TX] Nonces restored from flash (code %d)\n", ns);
+  } else {
+    DBG_PRINTLN("[LoRaWAN TX] No saved nonces in flash, DevNonce starts at 0");
+  }
 #if ENABLE_SESSION_PERSISTENCE
   if (sessionSaved()) g_node.setBufferSession(g_savedSession);
 #endif
 
   state = g_node.activateOTAA();
   // Save after every join attempt, even a failed one: the request already burned its DevNonce.
-  if (state != RADIOLIB_LORAWAN_SESSION_RESTORED) storeWrite(NONCES_FILE, g_node.getBufferNonces(), RADIOLIB_LORAWAN_NONCES_BUF_SIZE);
+  if (state != RADIOLIB_LORAWAN_SESSION_RESTORED) storeWrite(NONCES_FILE, signedNonces(), RADIOLIB_LORAWAN_NONCES_BUF_SIZE);
   if (state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
     g_sessionStatus = "RESTORED";
   } else if (state == RADIOLIB_LORAWAN_NEW_SESSION) {
