@@ -4,22 +4,23 @@
 Battery-powered LoRaWAN mailbox-flap tilt sensor. Seeed XIAO nRF52840 + Wio-SX1262 (EU868 default), Grove LIS3DHTR accelerometer (I²C `0x19`), CR123A cell. Sends OTAA uplinks to TTN; a static Web Bluetooth console (`web/`) provides local maintenance over BLE.
 
 ## Architecture & Data Flow
-- **Firmware is a one-shot state machine, not a loop.** The LIS3DH INT1 pin (D0) wakes the MCU from System-Off, which is a full reboot. `setup()` runs once and ends in `sleepUntilWake()`. `loop()` is empty.
-- `setup()` order: watchdog → LED blink → serial (debug env) → read `RESETREAS` → IMU init + battery read → optional BLE maintenance → knock check (`MailboxEmptied`) or flap sampling → `MailDelivered` uplink → sleep.
-- No RTOS or ISRs. Use blocking `delay()` and `millis()` polling.
-- **State** lives in file-scope `static g_*` globals in each module. They reset on every wake. The tilt zero offset is NOT persisted. LoRaWAN session/nonces live in `.noinit` RAM guarded by `SESSION_MAGIC` (`src/lora/lorawan.cpp`).
-- **Uplink** (FPort 1, 7 bytes): `[0]` battery `(mV-2000)/10`, `[1]` sag/5, `[2]` peak tilt, `[3]` resting tilt, `[4]` open duration ×100 ms, `[5]` int8 temperature, `[6]` event (`01` delivered, `02` emptied, `03` manual test).
-- **BLE** (Nordic UART, newline-delimited): browser→device `PIN:<pin> CMD:<ACTION>` with actions `RECALIBRATE`, `TEST_UPLINK`, `RESET_KNOCKS`, `DFU`, `SLEEP`. Device→browser single-line JSON: `{"type":"telemetry",...}`, `{"type":"knock",...}`, `{"status":"OK|ERROR","msg":...}`.
+- **Two sleep modes, chosen by `HEARTBEAT_INTERVAL_HOURS`.** `0`: System-Off. The LIS3DH INT1 pin (D0) wakes the MCU with a full reboot, `setup()` handles one event and ends in `systemOff`, and `loop()` is empty. `>0` (default 24): System-On sleep so a heartbeat timer works. `setup()` runs once at boot, then `loop()` sleeps in `sleepWait()` (`src/core/sleep.cpp`, FreeRTOS tickless idle, INT1 via the framework's `attachInterrupt`) until INT1 fires or the heartbeat is due. No reboot on a flap wake in this mode.
+- `setup()` order: watchdog → LED blink → serial (debug env) → read `RESETREAS` + startup counter → IMU init + battery read → startup heartbeat (`heartbeatOnStartup`) → awake window on a real startup, else `handleWake()` (knock check → `MailCleared`, flap hold → poll uplink + awake window, flap delivery → `MailInserted`) → sleep.
+- No ISRs in app code except the INT1 callback in `sleep.cpp`. Use blocking `delay()` and `millis()` polling elsewhere.
+- **State** lives in file-scope `static g_*` globals in each module (they reset on every wake in System-Off mode, persist in System-On mode). The tilt zero offset is NOT persisted. The LoRaWAN session lives in `.noinit` RAM guarded by `SESSION_MAGIC` (`src/lora/lorawan.cpp`). Flash (InternalFS, atomic tmp + rename via `src/core/store.cpp`): `/lw_nonces` (DevNonce, must never repeat for TTN, saved after every join attempt) and `/state` (mail inside or not, `src/core/state.cpp`). `src/core/startup.cpp` keeps a `.noinit` consecutive-startup counter for the rapid-reboot guard.
+- **Uplink** (FPort 1, tagged frame, `src/lora/uplink.h`): `[0]` type (`01` mail_inserted, `02` mail_cleared, `03` heartbeat, `04` manual_test), `[1]` battery `(mV-2000)/10`, `[2]` sag/5, `[3]` int8 temperature, then per type: mail_inserted/manual_test `[4]` peak tilt, `[5]` resting tilt, `[6]` open duration ×100 ms; mail_cleared `[4]` source; heartbeat `[4]` mail inside, `[5]` reason. **Downlink** (FPort 2): one opcode byte, `01` heartbeat, `02` clear.
+- **Commands** live in one table, `src/cmd/cmd.cpp` (parser in `cmd_parse.cpp`, pure). BLE (`PIN:<pin> CMD:<ACTION> [args]`, Nordic UART, newline-delimited), the USB serial CLI (`src/cmd/serial_cli.cpp`, bare `action args`, no PIN) and TTN downlinks (opcode column) all run through it. Actions: `RECALIBRATE`, `TEST_UPLINK`, `RESET_KNOCKS`, `DFU`, `SLEEP`, `HELP`, `HEARTBEAT`, `CLEAR`. Device→browser single-line JSON: `{"type":"telemetry",...}`, `{"type":"knock",...}`, `{"status":"OK|ERROR","msg":...}`.
+- **Awake window** (`bleConsoleRun()`): opens on a real startup or a flap hold; stays open while a BLE client is connected, closes `BLE_TIMEOUT_SECONDS` after opening or after the last client left. Downlinks are only received after an uplink (Class A); `cmdDrainDownlinks` runs after every send.
 
 ### Sync contracts (change both sides together)
 | Change in | Must also update |
 |---|---|
-| `src/lora/uplink.{h,cpp}`: byte layout, scaling, FPort, event codes | `ttn/payload_formatter.js` (+ its test), `test/test_uplink`, README §4.4, and the user's TTN Console copy (pasted by hand, not deployed) |
-| `src/ble/console.cpp`: BLE JSON fields, command names, line format | `web/app.js` |
+| `src/lora/uplink.{h,cpp}`: byte layout, scaling, FPort, message types, downlink opcodes | `ttn/payload_formatter.js` (+ its test), `test/test_uplink`, README §4.4, and the user's TTN Console copy (uplink AND downlink formatter, pasted by hand, not deployed) |
+| `src/cmd/cmd.cpp`: command names, downlink opcodes; `src/ble/console.cpp`: BLE JSON fields | `web/app.js`, `ttn/payload_formatter.js` (opcode map), README §5.3 |
 | LoRa region | `LORAWAN_BAND` in `include/settings.h` |
 
 ## Key Directories
-- `src/main.cpp`: wake flow only. `src/core/` (log, power/battery/watchdog), `src/motion/` (imu, knock, flap), `src/lora/` (lorawan, uplink, hex_key), `src/ble/` (console).
+- `src/main.cpp`: wake flow only. `src/core/` (log, power/battery/watchdog, sleep, store, state, startup, heartbeat_policy), `src/motion/` (imu, knock, flap), `src/lora/` (lorawan, uplink, hex_key), `src/cmd/` (command table, parser, serial CLI), `src/ble/` (console / awake window).
 - `include/settings.h`: user knobs and feature toggles. `include/board.h`: fixed pins. `include/secrets.h`: credentials (gitignored).
 - `ttn/`: payload formatter and its Node test. `test/`: native Unity suites.
 - `web/`: static console. `index.html` loads `app.js`. `app.css` imports `tokens.css`, then `base.css`.
@@ -46,7 +47,7 @@ No lint or format tooling is configured. The first build needs network (git plat
 `src/main.cpp`, `include/settings.h`, `include/board.h`, `include/secrets.example.h`, `platformio.ini`, `ttn/payload_formatter.js`, `web/index.html` + `web/app.js`, `README.md` (BOM, wiring, TTN setup).
 
 ## Runtime/Tooling Preferences
-- PlatformIO, Arduino framework on the Adafruit nRF52 core (`bluefruit.h`). Envs: `release` (default, no serial), `debug` (serial @ 115200, `DEBUG_SERIAL=1`), `native` (host tests). Platform is pinned to a commit. Deps: `jgromes/RadioLib @ ^6.6.0`.
+- PlatformIO, Arduino framework on the Adafruit nRF52 core (`bluefruit.h`). Envs: `release` (default, no serial), `debug` (serial @ 115200, `DEBUG_SERIAL=1`, plus `RADIOLIB_DEBUG_BASIC/PROTOCOL` protocol logging), `native` (host tests). Platform is pinned to a commit. Deps: `jgromes/RadioLib @ ^6.6.0`.
 - `lib_archive = no` is set in `platformio.ini` (a common nRF52 setting so library weak symbols/ISRs link). Its necessity here is unverified; don't remove it without a build and on-device test.
 - Credentials and `BLE_AUTH_PIN` live in the gitignored `include/secrets.h`. NEVER commit real keys.
 - `FIRMWARE_VERSION` is defined in `src/version.h`.

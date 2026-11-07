@@ -2,30 +2,33 @@
 
 A battery-powered LoRaWAN sensor node for shared metal mailbox banks (*Briefkastenanlagen*). It mounts on the moving mail flap, measures the flap opening angle and duration, and uses accelerometer reference register latching to prevent infinite wake loops when mail wedges the flap open.
 
-Built on an **nRF52840 + SX1262** hardware stack powered directly from a **3.0V CR123A Lithium** cell, maintaining a **4 to 8 µA sleep current** down to sub-zero temperatures.
+Built on an **nRF52840 + SX1262** hardware stack powered directly from a **3.0V CR123A Lithium** cell. In System-Off mode (`HEARTBEAT_INTERVAL_HOURS 0`) the sleep current is in the **4 to 8 µA** range; the default heartbeat timer keeps the MCU in System-On sleep, which draws more and has not been measured on hardware.
 
 ## Wake Flow
 
-The firmware is a one-shot state machine: the LIS3DH INT1 pin wakes the MCU from System-Off (a full reboot), `setup()` handles one event, then the node powers off again.
+The LIS3DH INT1 pin wakes the MCU, which handles one event and sleeps again. With `HEARTBEAT_INTERVAL_HOURS 0` the sleep is System-Off and every wake is a full reboot. With a heartbeat timer the MCU sleeps in System-On so the RTC keeps running, and a wake resumes the loop.
 
 ```mermaid
 flowchart TD
-  W[Wake: INT1 or power-on] --> B{Cold boot or bench mode?}
-  B -- yes --> BLE1[BLE console, 15 s window]
+  W[Wake: INT1, timer or power-on] --> T{Heartbeat timer?}
+  T -- yes --> HB[Uplink: heartbeat] --> S
+  T -- no --> B{Power-up or bench mode?}
+  B -- yes --> SH[Startup heartbeat, unless a rapid reboot loop] --> BLE1[Awake window: BLE + serial CLI + downlinks]
   BLE1 --> S
   B -- no --> I{IMU present?}
   I -- no --> S
   I -- yes --> K{Flap closed at wake?}
   K -- yes --> KN{4 knocks within 2.2 s?}
-  KN -- yes --> E[Uplink: mailbox emptied]
+  KN -- yes --> E[Mail state: empty, uplink: mail cleared]
   KN -- no --> S
   K -- no --> F[Sample flap, up to 3 s]
   F --> H{Held above 60° for 15 s?}
-  H -- yes --> BLE2[BLE console until idle] --> S
+  H -- yes --> PU[Poll uplink] --> BLE2[Awake window] --> S
   H -- no --> P{Peak at least 12°?}
   P -- no --> S
-  P -- yes --> D[Uplink: mail delivered] --> S
-  E --> S[System-Off, deferred while USB or no IMU]
+  P -- yes --> D[Mail state: inside, uplink: mail inserted] --> S
+  E --> S[Sleep, deferred while USB or no IMU]
+  D --> S
 ```
 
 ---
@@ -84,10 +87,12 @@ Metal mailboxes block RF signals from escaping through sheet metal. However, the
 | :---: | :---: | :---: | :---: |
 | **3V3** | Direct 3.0V Supply Rail | Battery (+) & Sensor VCC | Main Chassis |
 | **GND** | System Ground | Battery (-) & Sensor GND | Main Chassis |
-| **D4** | I2C SDA (P0.04) | LIS3DH SDA | Across Hinge |
-| **D5** | I2C SCL (P0.05) | LIS3DH SCL | Across Hinge |
+| **D7** | I2C SDA (`PIN_ACCEL_SDA`) | LIS3DH SDA | Across Hinge |
+| **D6** | I2C SCL (`PIN_ACCEL_SCL`) | LIS3DH SCL | Across Hinge |
 | **D0** | Wake Interrupt (P0.02) | LIS3DH INT1 | Across Hinge |
-| **D1, D2, D3, D6, D8-D10** | LoRa SPI & Control | Wio-SX1262 Board | Internal Pin Headers |
+| **D1–D5, D8–D10** | LoRa DIO1, RST, BUSY, NSS, RF_SW (D5), SPI | Wio-SX1262 Board | Internal Pin Headers |
+
+I2C pins are configurable in `include/board.h` (`PIN_ACCEL_SDA` / `PIN_ACCEL_SCL`); the XIAO default is D4/D5, which the Wio-SX1262 occupies.
 
 ### Critical Wiring Rules
 1. **Direct 3V3 Rail (Bypass LDO):** Connect the 3.0V battery directly to the **3V3 pin** (not VIN/5V). The nRF52840, SX1262, and LIS3DH operate directly down to 1.8V. Bypassing the onboard regulator eliminates quiescent current waste and LDO dropout voltage.
@@ -135,41 +140,49 @@ cp include/secrets.example.h include/secrets.h
 The regional frequency band (`EU868`, `US915`, `AU915`, `AS923`, `KR920`, `IN865`) is `LORAWAN_BAND` in `include/settings.h`.
 
 ### 4.3 Setting Up the Payload Formatter
+The same file ([`ttn/payload_formatter.js`](./ttn/payload_formatter.js)) is a LoRa Alliance TS013 codec: it provides `decodeUplink`, `encodeDownlink` and `decodeDownlink`.
 1. In the TTN Console under your Application, navigate to **Payload formatters -> Uplink**.
 2. Set **Formatter type** to **Custom Javascript formatter**.
 3. Copy the entire contents of [`ttn/payload_formatter.js`](./ttn/payload_formatter.js) from this repository and paste it into the editor.
 4. Click **Save changes**.
+5. Repeat steps 1-4 under **Payload formatters -> Downlink** with the same file, so you can queue commands as JSON (`{"action":"heartbeat"}` or `{"action":"clear"}`).
 
-### 4.4 LoRaWAN Uplink Payload Specification
+### 4.4 LoRaWAN Payload Specification
 
-#### FPort 1: Mail Activity & Knock Events (7 Bytes)
-Transmitted whenever the flap opens or 4 knocks are detected.
+#### FPort 1 uplinks
+Every uplink is a tagged frame: a common 4-byte header, then fields that depend on the message type.
 
 | Byte | Field | Type | Scale / Range | Description |
 | :---: | :--- | :---: | :--- | :--- |
-| **0** | `battery_rest_mv` | `uint8` | `(mV - 2000) / 10` | Resting battery voltage (2000–4550 mV). |
-| **1** | `battery_sag_mv` | `uint8` | `sag_mv / 5` | Battery voltage drop under 100 mA LoRa TX load (ESR health check). |
-| **2** | `peak_tilt_deg` | `uint8` | 0°–90° | Maximum opening angle recorded during flap movement. |
-| **3** | `resting_tilt_deg`| `uint8` | 0°–90° | Resting angle after settling. **> 10° indicates flap jammed open!** |
-| **4** | `open_duration_s` | `uint8` | `0.1s steps` | Total time flap spent open (0–25.5 seconds). |
-| **5** | `temperature_c` | `int8` | -40 °C to +85 °C | Internal mailbox temperature from on-die sensor. |
-| **6** | `event_type` | `uint8` | `0x01`, `0x02`, `0x03` | `0x01`: Mail Delivered (Flap Opened), `0x02`: Mailbox Emptied (4 Knocks), `0x03`: Manual Test (from the web console). |
+| **0** | `type` | `uint8` | `0x01`-`0x04` | `0x01` mail inserted, `0x02` mail cleared, `0x03` heartbeat, `0x04` manual test (from the console). |
+| **1** | `battery_mv` | `uint8` | `(mV - 2000) / 10` | Resting battery voltage (2000–4550 mV). |
+| **2** | `battery_sag_mv` | `uint8` | `sag_mv / 5` | Battery voltage drop under LoRa TX load (ESR health check). |
+| **3** | `temperature_c` | `int8` | -40 °C to +85 °C | Internal temperature from the on-die sensor. |
 
-Decoded JSON output example:
+| Type | Extra bytes | Total |
+| :--- | :--- | :---: |
+| `mail_inserted`, `manual_test` | `[4]` peak tilt (0°–90°), `[5]` resting tilt (0°–90°, **> 10° on a delivery means the flap is jammed open**), `[6]` open duration in 0.1 s steps | 7 |
+| `mail_cleared` | `[4]` source: `0` knock, `1` downlink, `2` console | 5 |
+| `heartbeat` | `[4]` mail inside (`0`/`1`), `[5]` reason: `0` timer, `1` startup, `2` requested, `3` poll | 6 |
+
+Decoded JSON output example (`mail_inserted`):
 ```json
 {
-  "event": "mail_delivered",
-  "event_code": 1,
+  "type": "mail_inserted",
   "battery_voltage": 3.01,
+  "battery_mv": 3010,
   "battery_sag_mv": 45,
+  "temperature_c": 18,
   "peak_tilt_deg": 48,
   "resting_tilt_deg": 0,
   "open_duration_s": 0.8,
-  "temperature_c": 18,
   "is_jammed": false,
   "mail_volume": "large_envelope"
 }
 ```
+
+#### FPort 2 downlinks
+One opcode byte: `0x01` send a heartbeat (reason `requested`), `0x02` clear the mail-inside state and send `mail_cleared` (source `downlink`). See section 5.3 for when a queued downlink is delivered.
 
 ---
 
@@ -181,21 +194,49 @@ To diagnose the sensor, re-calibrate zero, or trigger firmware updates without d
 * *(Web Bluetooth requires a Secure Context (HTTPS), provided automatically by GitHub Pages).*
 
 ### 5.1 Triggering Maintenance Mode
-The node provides two ways to enter WebBluetooth maintenance mode:
-1. **Automatic Boot Window:** Whenever the device powers up (battery inserted, USB connected) or reboots, it automatically advertises as **`Mailbox-Sensor`** for **15 seconds**.
-2. **Flap Maintenance Trigger:** When already installed in the mailbox, hold the flap open past **60°** continuously for **15 seconds**.
+The node has one **awake window** that serves BLE, the USB serial CLI and TTN downlink pickup. It opens in two ways:
+1. **Power-up:** whenever the device powers up (battery inserted, USB connected) or reboots, it advertises as **`Mailbox-Sensor`**.
+2. **Flap Maintenance Trigger:** When already installed in the mailbox, hold the flap open past **60°** continuously for **15 seconds**. The node sends one poll uplink first, so any downlink you queued in TTN is delivered before the window starts.
 
-**Connection Persistence:** Once connected, the node **remains awake indefinitely** as long as the browser tab stays connected! As soon as you click *Disconnect* or close the browser (or if nobody connects within the advertising window), the node automatically shuts off the BLE radio and powers down to 2 µA System-Off sleep.
+**Window lifetime (one setting, `BLE_TIMEOUT_SECONDS`, default 60):** the node stays awake for as long as a BLE client is connected. If nobody is connected, the window closes `BLE_TIMEOUT_SECONDS` after it opened or after the last client left, whichever is later, and the node goes back to sleep.
+
 ### 5.2 PIN Authentication & Actions
-All modifying actions are protected by a configurable PIN (`BLE_AUTH_PIN` in `include/secrets.h`, default: `123456`):
-* **Comprehensive Live Telemetry:** Streams resting voltage, live voltage, voltage sag under LoRa load, core temperature, calibrated pitch angle, raw 3-axis accelerometer values ($X, Y, Z$), vector magnitude ($g$), zero horizon offset, live knock counts, LoRaWAN session status, uplink frame counter (`FCntUp`), and last transmitted hex payload.
+All BLE commands are protected by a configurable PIN (`BLE_AUTH_PIN` in `include/secrets.h`, default: `123456`):
+* **Comprehensive Live Telemetry:** Streams resting voltage, live voltage, voltage sag under LoRa load, core temperature, calibrated pitch angle, raw 3-axis accelerometer values ($X, Y, Z$), vector magnitude ($g$), zero horizon offset, live knock counts, whether mail is inside, LoRaWAN session status, uplink frame counter (`FCntUp`), and last transmitted hex payload.
 * **Knock Pattern Tracker:** Live hit indicator pulses on physical taps, displaying real-time hit counts and peak force ($g$) within the 2200 ms detection window.
 * **Test LoRaWAN Uplink:** Transmits an on-demand test packet directly from the browser to verify gateway reception, returning the frame counter, hex payload, and live battery sag.
+* **Send Heartbeat:** Sends a heartbeat uplink on demand.
+* **Clear Mail State:** Marks the mailbox as empty and sends a `mail_cleared` uplink, the same as the knock pattern.
 * **Zero Calibration:** Latches the current physical position as the new resting horizon ($0^\circ$).
 * **Reset Knocks:** Clears the knock tracker counter.
 * **Reboot to DFU:** Reboots the nRF52840 into the UF2 bootloader for USB firmware updates.
-* **Inactivity Auto-Sleep:** After 60 seconds of no Bluetooth traffic, the BLE radio completely shuts off and the node drops back to 2 µA System-Off sleep.
-### 5.3 Automated GitHub Pages Deployment (No Extra Branch Needed)
+
+### 5.3 Serial CLI and the Command Table
+Every command lives in one table in [`src/cmd/cmd.cpp`](./src/cmd/cmd.cpp); BLE, the USB serial CLI and TTN downlinks all run through it, so a new command is one table row.
+
+| Command | Description | Downlink opcode |
+| :--- | :--- | :---: |
+| `RECALIBRATE` | Set the current position as the zero horizon | - |
+| `TEST_UPLINK` | Send a manual test uplink | - |
+| `HEARTBEAT` | Send a heartbeat uplink | `0x01` |
+| `CLEAR` | Clear the mail-inside state and send `mail_cleared` | `0x02` |
+| `RESET_KNOCKS` | Reset the knock counter | - |
+| `DFU` | Reboot into the UF2 bootloader | - |
+| `SLEEP` | End the awake window and sleep | - |
+| `HELP` | List the commands | - |
+
+* **BLE:** `PIN:<pin> CMD:<NAME>` (used by the web console).
+* **Serial CLI:** type the bare command, e.g. `test_uplink`, over USB serial (115200). It is active during the awake window and needs no PIN, since it needs physical USB access. Toggle with `ENABLE_SERIAL_CLI` in `settings.h`.
+* **TTN downlink:** FPort 2, one opcode byte. In the TTN console use the formatter's `encodeDownlink` with `{"action":"heartbeat"}` or `{"action":"clear"}`.
+
+**Downlink timing:** LoRaWAN Class A devices only receive right after one of their own uplinks. A queued downlink is delivered after the node's next uplink (a heartbeat, a mail event, or the poll uplink sent when the flap-hold awake window opens), not instantly.
+
+### 5.4 Heartbeat and Mail State
+* **Mail state:** the node remembers whether mail is inside across reboots (flash file `/state`, written only when the state changes). It becomes "inside" on a delivery and "empty" on the knock pattern or the `CLEAR` command. It survives a normal reflash but not a chip erase.
+* **Heartbeat:** a `heartbeat` uplink carries the mail-inside flag and a reason (`timer`, `startup`, `requested`, `poll`). `HEARTBEAT_INTERVAL_HOURS` (default 24) sets the timer. `HEARTBEAT_ON_STARTUP` sends one after a real power-up or reset, not after a flap wake. If more than `HEARTBEAT_RAPID_REBOOT_MAX` startups happen in a row without a clean sleep, the startup heartbeat is skipped so a boot loop cannot flood the network.
+* **Power trade-off:** `HEARTBEAT_INTERVAL_HOURS 0` disables the timer and uses System-Off sleep (lowest drain). Any other value keeps the MCU in System-On sleep with the RTC running so the heartbeat fires on time, which draws more current. This has not been measured on hardware.
+
+### 5.5 Automated GitHub Pages Deployment (No Extra Branch Needed)
 The web console in `web/` is automatically deployed via GitHub Actions:
 
 1. In your GitHub repository at `veronoicc/mailbox-tilt-sensor`, go to **Settings -> Pages**.
