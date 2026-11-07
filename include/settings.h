@@ -37,10 +37,20 @@
 #define KNOCK_WINDOW_MS            2200
 #define KNOCK_ABORT_TIMEOUT_MS     500    // give up if no second hit arrives
 
-// ── BLE maintenance ──
+// ── BLE / awake window ──
+// The awake window (BLE advertising + serial CLI + TTN downlink pickup) opens on power-up and when
+// the flap is held open. It stays open while a client is connected and closes
+// BLE_TIMEOUT_SECONDS after the last client leaves (or after none connected).
 #define ENABLE_BLE_MAINTENANCE     true   // Web Bluetooth console
 #define BLE_DEVICE_NAME            "Mailbox-Sensor"
-#define BLE_BOOT_ADVERTISE_SECONDS 15     // advertise window after power-up
+#define BLE_TIMEOUT_SECONDS        60
 #define BLE_HOLD_ANGLE_DEG         60.0f  // hold the flap past this angle...
-#define BLE_HOLD_SECONDS           15     // ...for this long to start BLE
-#define BLE_IDLE_TIMEOUT_SECONDS   60     // no client for this long = go to sleep
+#define BLE_HOLD_SECONDS           15     // ...for this long to open the awake window
+#define ENABLE_SERIAL_CLI          true   // same commands as BLE over USB serial during the awake window
+
+// ── Heartbeat ──
+// 0 disables the timer and uses System-Off sleep (lowest drain). Any other value keeps the MCU in
+// System-On sleep with the RTC running so the heartbeat fires on time (a few µA more drain).
+#define HEARTBEAT_INTERVAL_HOURS   24
+#define HEARTBEAT_ON_STARTUP       true   // also send one after a real power-up/reset (not after a flap wake)
+#define HEARTBEAT_RAPID_REBOOT_MAX 3      // more consecutive startups than this without a clean sleep = boot loop, skip the startup heartbeat

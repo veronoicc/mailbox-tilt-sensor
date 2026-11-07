@@ -1,5 +1,6 @@
-// Mailbox tilt sensor. The LIS3DH INT1 pin wakes the MCU from System-Off (a full reset);
-// setup() handles one event and powers off again, so loop() never runs.
+// Mailbox tilt sensor. With HEARTBEAT_INTERVAL_HOURS == 0 the LIS3DH INT1 pin wakes the MCU from
+// System-Off (a full reset) and setup() handles one event, so loop() never runs. Otherwise the MCU
+// sleeps in System-ON and loop() is the wake loop.
 #include <Arduino.h>
 #include "board.h"
 #include "settings.h"
@@ -11,6 +12,11 @@
 #include "motion/flap.h"
 #include "lora/lorawan.h"
 #include "ble/console.h"
+#include "cmd/cmd.h"
+#include "core/heartbeat_policy.h"
+#include "core/sleep.h"
+#include "core/startup.h"
+#include "core/state.h"
 
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
@@ -42,34 +48,73 @@ static void startSerial() {
   DBG_PRINTLN("==================================================");
 }
 
-[[noreturn]] static void sleepUntilWake() {
-  if (benchMode()) {
-    DBG_PRINTLN("\n[BENCH MODE] Device will not deep-sleep: USB is plugged in or IMU is absent.");
-    DBG_PRINTLN("[BENCH MODE] Continuing WebBluetooth maintenance mode...");
-  }
+static void logReply(void*, const char* line) { DBG_PRINTLN(line); }
+static const CmdOut kLogOut = {logReply, nullptr};
+
+// Stay awake in the BLE/serial window for as long as USB is plugged in or the IMU is absent.
+static void holdWhileBench() {
+  if (!benchMode()) return;
+  DBG_PRINTLN("\n[BENCH MODE] Device will not sleep: USB is plugged in or IMU is absent.");
+  DBG_PRINTLN("[BENCH MODE] Continuing maintenance mode...");
   while (benchMode()) {
-#if ENABLE_BLE_MAINTENANCE
-    bleConsoleRun(BLE_IDLE_TIMEOUT_SECONDS);
-#else
+    bleConsoleRun();
+    cmdClearSleepRequest();
     watchdogFeed();
-    delay(1000);
-#endif
   }
+}
 
-  DBG_PRINTLN("[POWER] Entering System-Off Deep Sleep (wake on INT1 pin)...");
+// Everything that must be quiet before the MCU sleeps.
+static void prepareSleep() {
   if (DEBUG_SERIAL) Serial.flush();
-
   lorawanSleep();
-  imuArmWake();
-
   // Tri-state LEDs to prevent active-low parasitic draw.
   pinMode(LED_RED, INPUT);
   pinMode(LED_GREEN, INPUT);
   pinMode(LED_BLUE, INPUT);
-
-  systemOff(PIN_ACCEL_INT, 1);
-  for (;;) {}
 }
+
+// One INT1 event: knock pattern on a closed flap, hold-open maintenance window, or a flap delivery.
+static void handleWake(const AccelSample& initial) {
+#if ENABLE_KNOCK_DETECTION
+  // When an interrupt fires without tilt, check if it matches a knock pattern.
+  if (initial.pitch < FLAP_CLOSED_DEG) {
+    DBG_PRINTLN("[TRIGGER] Accel INT1 fired while flap is closed (<8 deg). Checking knock pattern...");
+    if (knockPatternDetected()) {
+      stateSetMailInside(false);
+      lorawanSend(UplinkMsg::mailCleared(ClearSource::Knock));
+      cmdDrainDownlinks(kLogOut);
+    }
+    return;
+  }
+#endif
+
+  const FlapMotion m = flapSample(initial.pitch);
+
+  if (flapHeldOpen(m)) {
+    lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Poll));
+    cmdDrainDownlinks(kLogOut);
+    if (!cmdSleepRequested()) bleConsoleRun();
+    cmdClearSleepRequest();
+    return;
+  }
+
+  if (m.peakDeg < FLAP_TRIGGER_DEG) {
+    DBG_PRINTF("[FILTER] Peak tilt %.1f° < threshold %.1f°. Ignoring false alarm.\n", m.peakDeg, FLAP_TRIGGER_DEG);
+    return;
+  }
+
+  stateSetMailInside(true);  // physical truth, even if the uplink fails
+  lorawanSend(UplinkMsg::mailInserted(m.peakDeg, m.settledDeg, m.openMs));
+  cmdDrainDownlinks(kLogOut);
+}
+
+#if HEARTBEAT_INTERVAL_HOURS > 0
+static constexpr uint32_t HEARTBEAT_INTERVAL_MS = HEARTBEAT_INTERVAL_HOURS * 3600000UL;
+static_assert(HEARTBEAT_INTERVAL_HOURS <= 500, "HEARTBEAT_INTERVAL_HOURS must keep the interval below 2^31 ms (signed delta)");
+// Reset after the startup heartbeat and after each timer heartbeat only, so frequent mail events
+// cannot starve it. Compared as a signed delta so it survives the millis() wrap.
+static uint32_t g_nextHeartbeatMs;
+#endif
 
 void setup() {
   watchdogStart();
@@ -77,7 +122,7 @@ void setup() {
   startSerial();
 
   const bool woke = wokeFromSystemOff();
-  (void)woke;  // only used when BLE maintenance is enabled
+  const uint8_t startups = startupCounterRecord(!woke);
   dcdcEnable();
 
   pinMode(PIN_ACCEL_INT, INPUT);
@@ -94,50 +139,58 @@ void setup() {
     DBG_PRINTF("[INIT] Initial Pitch Angle:  %.1f deg (Zero offset: %.1f deg)\n", initial.pitch, imuTiltZero());
   }
 
-#if ENABLE_BLE_MAINTENANCE
-  // On cold boot/power-up, or if USB is plugged in or the IMU is absent:
+  if (heartbeatOnStartup(HEARTBEAT_ON_STARTUP, !woke, startups, HEARTBEAT_RAPID_REBOOT_MAX)) {
+    lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Startup));
+    cmdDrainDownlinks(kLogOut);
+  }
+#if HEARTBEAT_INTERVAL_HOURS > 0
+  g_nextHeartbeatMs = millis() + HEARTBEAT_INTERVAL_MS;
+#endif
+
   if (!woke || benchMode()) {
-    DBG_PRINTF("[BOOT] Advertising WebBluetooth as '%s'...\n", BLE_DEVICE_NAME);
-    bleConsoleRun(BLE_BOOT_ADVERTISE_SECONDS);
-    sleepUntilWake();
+    DBG_PRINTLN("[BOOT] Opening the awake window...");
+    bleConsoleRun();
+    cmdClearSleepRequest();
+  } else {
+    handleWake(initial);
   }
+  holdWhileBench();
+
+#if HEARTBEAT_INTERVAL_HOURS == 0
+  DBG_PRINTLN("[POWER] Entering System-Off Deep Sleep (wake on INT1 pin)...");
+  prepareSleep();
+  imuArmWake();
+  startupCounterClear();
+  systemOff(PIN_ACCEL_INT, 1);
+  for (;;) {}
 #endif
-
-  // If IMU is missing, enter safe idle rather than waking on noise
-  if (!imuPresent()) {
-    DBG_PRINTLN("[HALT] IMU not detected. Waiting in bench mode...");
-    sleepUntilWake();
-  }
-
-#if ENABLE_KNOCK_DETECTION
-  // When an interrupt fires without tilt, check if it matches a knock pattern.
-  if (initial.pitch < FLAP_CLOSED_DEG) {
-    DBG_PRINTLN("[TRIGGER] Accel INT1 fired while flap is closed (<8 deg). Checking knock pattern...");
-    if (knockPatternDetected()) {
-      lorawanSendEvent(UplinkEvent::MailboxEmptied, 0, 0, 0);
-      delay(500);
-    }
-    sleepUntilWake();
-  }
-#endif
-
-  const FlapMotion m = flapSample(initial.pitch);
-
-#if ENABLE_BLE_MAINTENANCE
-  if (flapHeldOpen(m)) {
-    bleConsoleRun(BLE_IDLE_TIMEOUT_SECONDS);
-    sleepUntilWake();
-  }
-#endif
-
-  if (m.peakDeg < FLAP_TRIGGER_DEG) {
-    DBG_PRINTF("[FILTER] Peak tilt %.1f° < threshold %.1f°. Ignoring false alarm.\n", m.peakDeg, FLAP_TRIGGER_DEG);
-    sleepUntilWake();
-  }
-
-  lorawanSendEvent(UplinkEvent::MailDelivered, m.peakDeg, m.settledDeg, m.openMs);
-  delay(1000);
-  sleepUntilWake();
 }
 
+#if HEARTBEAT_INTERVAL_HOURS > 0
+// System-ON wake loop: the CPU sleeps in FreeRTOS tickless idle (RTC1 keeps time) until INT1 fires
+// or the heartbeat is due, so a flap wake is not a reset. The SoftDevice stays enabled after the
+// first BLE use and keeps its own low-power clock running, which costs extra current compared with
+// System-Off; the amount is unmeasured. WDT_CONFIG_SLEEP_Pause pauses the watchdog while the CPU
+// sleeps, so a long sleep does not reset the device; it is fed on every wake.
+void loop() {
+  watchdogFeed();
+  holdWhileBench();
+
+  int32_t left = (int32_t)(g_nextHeartbeatMs - millis());
+  if (left <= 0) {
+    lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Timer));
+    cmdDrainDownlinks(kLogOut);
+    g_nextHeartbeatMs = millis() + HEARTBEAT_INTERVAL_MS;
+    left = (int32_t)HEARTBEAT_INTERVAL_MS;
+  }
+
+  prepareSleep();
+  imuArmWake();  // release the latched INT1 line before arming, or a high line gives no new event
+  startupCounterClear();
+  const SleepWake why = sleepWait((uint32_t)left);
+  watchdogFeed();
+  if (why == SleepWake::Motion) handleWake(imuRead());
+}
+#else
 void loop() {}
+#endif
