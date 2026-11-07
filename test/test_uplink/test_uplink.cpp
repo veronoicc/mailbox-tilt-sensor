@@ -20,7 +20,7 @@ static void check(const UplinkMsg& m, const uint8_t (&want)[UPLINK_SIZE]) {
   TEST_ASSERT_EQUAL_HEX8_ARRAY(want, out, UPLINK_SIZE);
 }
 
-// Byte vectors mirror ttn/payload_formatter.test.js — keep both sides in sync.
+// Byte vectors mirror ttn/formatters.test.js — keep both sides in sync.
 static void test_mail_inserted() {
   const uint8_t want[] = {0x01, 101, 9, 18, 1, 48, 0, 8};
   check(filled(UplinkMsg::mailInserted(48.4f, 0.0f, 850), 3010, 45, 18, true), want);

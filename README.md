@@ -140,12 +140,12 @@ cp include/secrets.example.h include/secrets.h
 The regional frequency band (`EU868`, `US915`, `AU915`, `AS923`, `KR920`, `IN865`) is `LORAWAN_BAND` in `include/settings.h`.
 
 ### 4.3 Setting Up the Payload Formatter
-The same file ([`ttn/payload_formatter.js`](./ttn/payload_formatter.js)) is a LoRa Alliance TS013 codec: it provides `decodeUplink`, `encodeDownlink` and `decodeDownlink`.
+Each TTN tab has its own file: [`ttn/uplink_formatter.js`](./ttn/uplink_formatter.js) (`decodeUplink`) and [`ttn/downlink_formatter.js`](./ttn/downlink_formatter.js) (`encodeDownlink`, `decodeDownlink`).
 1. In the TTN Console under your Application, navigate to **Payload formatters -> Uplink**.
 2. Set **Formatter type** to **Custom Javascript formatter**.
-3. Copy the entire contents of [`ttn/payload_formatter.js`](./ttn/payload_formatter.js) from this repository and paste it into the editor.
+3. Paste the entire contents of `ttn/uplink_formatter.js` into the editor.
 4. Click **Save changes**.
-5. Repeat steps 1-4 under **Payload formatters -> Downlink** with the same file, so you can queue commands as JSON (`{"action":"heartbeat"}` or `{"action":"clear"}`).
+5. Repeat under **Payload formatters -> Downlink** with `ttn/downlink_formatter.js`, so you can queue commands as JSON (`{"action":"heartbeat"}` or `{"action":"clear"}`).
 
 ### 4.4 LoRaWAN Payload Specification
 
@@ -290,7 +290,7 @@ pio run -e debug -t upload
 
 # Host unit tests (uplink encoder, hex key parser) and formatter test
 pio test -e native
-node --test ttn/payload_formatter.test.js
+node --test ttn/formatters.test.js
 ```
 
 *(Note: If the upload port is not automatically detected, double-tap the tiny reset button next to the XIAO USB-C port to force UF2 bootloader mode).*

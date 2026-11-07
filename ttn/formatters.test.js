@@ -5,12 +5,18 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-const ctx = {};
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, "payload_formatter.js"), "utf8"), ctx);
+// One context per file: each is pasted into its own TTN tab and must stand alone.
+const load = (f) => {
+  const c = {};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, f), "utf8"), c);
+  return c;
+};
+const upCtx = load("uplink_formatter.js");
+const downCtx = load("downlink_formatter.js");
 
 // Round-trip through JSON: objects from another VM realm have foreign prototypes.
 const j = (v) => JSON.parse(JSON.stringify(v));
-const decode = (bytes, fPort = 1) => j(ctx.decodeUplink({ bytes, fPort }));
+const decode = (bytes, fPort = 1) => j(upCtx.decodeUplink({ bytes, fPort }));
 
 test("mail_inserted", () => {
   assert.deepEqual(decode([0x01, 101, 9, 18, 1, 48, 0, 8]).data, {
@@ -94,14 +100,14 @@ test("wrong length", () => {
 });
 
 test("encodeDownlink", () => {
-  assert.deepEqual(j(ctx.encodeDownlink({ data: { action: "heartbeat" } })), { bytes: [1], fPort: 2 });
-  assert.deepEqual(j(ctx.encodeDownlink({ data: { action: "clear" } })), { bytes: [2], fPort: 2 });
-  assert.equal(j(ctx.encodeDownlink({ data: { action: "nope" } })).errors.length, 1);
+  assert.deepEqual(j(downCtx.encodeDownlink({ data: { action: "heartbeat" } })), { bytes: [1], fPort: 2 });
+  assert.deepEqual(j(downCtx.encodeDownlink({ data: { action: "clear" } })), { bytes: [2], fPort: 2 });
+  assert.equal(j(downCtx.encodeDownlink({ data: { action: "nope" } })).errors.length, 1);
 });
 
 test("decodeDownlink", () => {
-  assert.deepEqual(j(ctx.decodeDownlink({ bytes: [1], fPort: 2 })), { data: { action: "heartbeat" } });
-  assert.deepEqual(j(ctx.decodeDownlink({ bytes: [2], fPort: 2 })), { data: { action: "clear" } });
-  assert.equal(j(ctx.decodeDownlink({ bytes: [9], fPort: 2 })).errors.length, 1);
-  assert.equal(j(ctx.decodeDownlink({ bytes: [1], fPort: 1 })).errors.length, 1);
+  assert.deepEqual(j(downCtx.decodeDownlink({ bytes: [1], fPort: 2 })), { data: { action: "heartbeat" } });
+  assert.deepEqual(j(downCtx.decodeDownlink({ bytes: [2], fPort: 2 })), { data: { action: "clear" } });
+  assert.equal(j(downCtx.decodeDownlink({ bytes: [9], fPort: 2 })).errors.length, 1);
+  assert.equal(j(downCtx.decodeDownlink({ bytes: [1], fPort: 1 })).errors.length, 1);
 });

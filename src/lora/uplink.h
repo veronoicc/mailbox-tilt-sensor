@@ -1,7 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-// FPort 1 uplink / FPort 2 downlink. Layout and scaling must match ttn/payload_formatter.js.
+// FPort 1 uplink / FPort 2 downlink. Layout and scaling must match ttn/uplink_formatter.js.
 // Every uplink is the same fixed frame; only the reason differs.
 constexpr uint8_t UPLINK_FPORT = 1;
 constexpr uint8_t DOWNLINK_FPORT = 2;

@@ -16,8 +16,8 @@ Battery-powered LoRaWAN mailbox-flap tilt sensor. Seeed XIAO nRF52840 + Wio-SX12
 ### Sync contracts (change both sides together)
 | Change in | Must also update |
 |---|---|
-| `src/lora/uplink.{h,cpp}`: byte layout, scaling, FPort, message types, downlink opcodes | `ttn/payload_formatter.js` (+ its test), `test/test_uplink`, README §4.4, and the user's TTN Console copy (uplink AND downlink formatter, pasted by hand, not deployed) |
-| `src/cmd/cmd.cpp`: command names, downlink opcodes; `src/ble/proto.{h,cpp}`: BLE frame layouts (+ `test/test_proto`) | `web/proto.js` (+ `web/proto.test.js`, same byte vectors), `web/app.js`, `ttn/payload_formatter.js` (opcode map), README §5.2/§5.3 |
+| `src/lora/uplink.{h,cpp}`: byte layout, scaling, FPort, message types, downlink opcodes | `ttn/uplink_formatter.js` + `ttn/downlink_formatter.js` (+ `ttn/formatters.test.js`), `test/test_uplink`, README §4.4, and the user's TTN Console copies (uplink and downlink tabs, pasted by hand, not deployed) |
+| `src/cmd/cmd.cpp`: command names, downlink opcodes; `src/ble/proto.{h,cpp}`: BLE frame layouts (+ `test/test_proto`) | `web/proto.js` (+ `web/proto.test.js`, same byte vectors), `web/app.js`, `ttn/downlink_formatter.js` (opcode map), README §5.2/§5.3 |
 | LoRa region | `LORAWAN_BAND` in `include/settings.h` |
 
 ## Key Directories
@@ -42,10 +42,10 @@ No lint or format tooling is configured. The first build needs network (git plat
 - Error handling: functions return `bool` or an error code, with no exceptions. Callers mostly continue silently. The NRF WDT (30 s) is fed in the send and BLE loops.
 - If `WHO_AM_I != 0x33` the IMU is missing. Firmware enters bench mode and must NOT call `systemOff`, because the device would be unwakeable. USB presence also blocks System-Off.
 - Web CSS: use `var(--token)` from `tokens.css` (oklch colours, `--space-*`, `--text-*`), not hard-coded values. UI state is set via `data-*` attributes and the `hidden` attribute.
-- Formatter JS is ES5 style (`var`), a single `decodeUplink(input)`.
+- Formatter JS is ES5 style (`var`): `ttn/uplink_formatter.js` has `decodeUplink(input)`, `ttn/downlink_formatter.js` has `encodeDownlink`/`decodeDownlink`. Each is pasted into its own TTN tab, so neither may reference the other.
 
 ## Important Files
-`src/main.cpp`, `include/settings.h`, `include/board.h`, `include/secrets.example.h`, `platformio.ini`, `ttn/payload_formatter.js`, `web/index.html` + `web/app.js`, `README.md` (BOM, wiring, TTN setup).
+`src/main.cpp`, `include/settings.h`, `include/board.h`, `include/secrets.example.h`, `platformio.ini`, `ttn/uplink_formatter.js`, `ttn/downlink_formatter.js`, `web/index.html` + `web/app.js`, `README.md` (BOM, wiring, TTN setup).
 
 ## Runtime/Tooling Preferences
 - PlatformIO, Arduino framework on the Adafruit nRF52 core (`bluefruit.h`). Envs: `release` (default, no serial), `debug` (serial @ 115200, `DEBUG_SERIAL=1`, plus `RADIOLIB_DEBUG_BASIC/PROTOCOL` protocol logging), `native` (host tests). Platform is pinned to a commit. Deps: `jgromes/RadioLib @ ^6.6.0`.
@@ -55,7 +55,7 @@ No lint or format tooling is configured. The first build needs network (git plat
 - The web UI uses Web Bluetooth, so it needs HTTPS and a Chromium browser. It loads Google Fonts from a CDN.
 
 ## Testing & QA
-- Native Unity tests (`pio test -e native`) cover `src/lora/uplink.cpp`, `src/lora/hex_key.cpp`, `src/cmd/cmd_parse.cpp`, `src/core/heartbeat_policy.cpp` and `src/ble/proto.cpp`; the formatter has `node --test ttn/payload_formatter.test.js` and the web protocol has `node --test web/proto.test.js`. The byte vectors in `test_uplink`/formatter and in `test_proto`/`proto.test.js` mirror each other: keep them in sync. Everything else is verified with `pio run -e release` / `-e debug`; hardware behaviour needs a device.
+- Native Unity tests (`pio test -e native`) cover `src/lora/uplink.cpp`, `src/lora/hex_key.cpp`, `src/cmd/cmd_parse.cpp`, `src/core/heartbeat_policy.cpp` and `src/ble/proto.cpp`; the formatters have `node --test ttn/formatters.test.js` and the web protocol has `node --test web/proto.test.js`. The byte vectors in `test_uplink`/formatter and in `test_proto`/`proto.test.js` mirror each other: keep them in sync. Everything else is verified with `pio run -e release` / `-e debug`; hardware behaviour needs a device.
 - CI only deploys `web/`. A push to `main` touching `web/**` goes live immediately, so treat web edits as production.
 
 ## Known Gaps and Gotchas

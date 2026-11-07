@@ -1,4 +1,4 @@
-// Paste into TTN Console -> Payload formatters (Custom Javascript formatter), uplink and downlink.
+// Paste into TTN Console -> Payload formatters -> Uplink (Custom Javascript formatter).
 // Layout must match src/lora/uplink.cpp.
 function decodeUplink(input) {
   var bytes = input.bytes;
@@ -51,29 +51,4 @@ function decodeUplink(input) {
     }
   }
   return { data: data };
-}
-
-var DOWNLINK_ACTIONS = { heartbeat: 1, clear: 2 };
-
-function encodeDownlink(input) {
-  var action = input.data && input.data.action;
-  if (!DOWNLINK_ACTIONS.hasOwnProperty(action)) {
-    return { errors: ["Unknown action: " + action] };
-  }
-  return { bytes: [DOWNLINK_ACTIONS[action]], fPort: 2 };
-}
-
-function decodeDownlink(input) {
-  if (input.fPort !== 2) {
-    return { errors: ["Unsupported FPort: " + input.fPort] };
-  }
-  if (input.bytes.length < 1) {
-    return { errors: ["Empty payload"] };
-  }
-  for (var action in DOWNLINK_ACTIONS) {
-    if (DOWNLINK_ACTIONS[action] === input.bytes[0]) {
-      return { data: { action: action } };
-    }
-  }
-  return { errors: ["Unknown opcode: " + input.bytes[0]] };
 }
