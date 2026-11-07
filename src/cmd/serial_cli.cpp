@@ -13,8 +13,15 @@ static size_t g_len = 0;
 static bool g_overflow = false;
 static bool g_started = false;
 
-static void serialWrite(void*, const char* line) { Serial.println(line); }
-static const CmdOut kSerialOut = {serialWrite, nullptr};
+static void serialReply(void*, bool ok, const char* msg) { Serial.printf("[%s] %s\n", ok ? "OK" : "ERROR", msg); }
+
+static void serialStatus(void*, StatusComp comp) {
+  char line[160];
+  statusText(comp, line, sizeof line);
+  Serial.println(line);
+}
+
+static const CmdOut kSerialOut = {serialReply, serialStatus, nullptr};
 #endif
 
 void serialCliBegin() {
@@ -34,7 +41,7 @@ void serialCliPoll() {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
       if (g_overflow) {
-        serialWrite(nullptr, "{\"status\":\"ERROR\",\"msg\":\"Line too long\"}");
+        serialReply(nullptr, false, "Line too long");
       } else if (g_len > 0) {
         g_line[g_len] = 0;
         cmdRunLine(g_line, CmdSource::Serial, kSerialOut);

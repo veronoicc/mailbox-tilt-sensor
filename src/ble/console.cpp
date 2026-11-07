@@ -2,31 +2,66 @@
 #include "ble/console.h"
 #include "settings.h"
 #include <Arduino.h>
-#include <stdio.h>
 #include "board.h"
-#include "version.h"
 #include "cmd/cmd.h"
 #include "cmd/serial_cli.h"
 #include "core/log.h"
 #include "core/power.h"
-#include "core/state.h"
-#include "lora/lorawan.h"
 #include "motion/imu.h"
 #include "motion/knock.h"
 
 #if ENABLE_BLE_MAINTENANCE
 #include <bluefruit.h>
+#include "ble/proto.h"
 
 static constexpr size_t MAX_LINE = 64;  // BLE input is untrusted; bound the command buffer.
 
 static BLEUart g_uart;
 static uint32_t g_knockCount = 0;
+static uint16_t g_streamMs = BLE_STREAM_DEFAULT_MS;  // 0 = off
 static bool g_bleStarted = false;
 
-static void bleWrite(void*, const char* line) { g_uart.println(line); }
-static const CmdOut kBleOut = {bleWrite, nullptr};
-
 void bleConsoleResetKnocks() { g_knockCount = 0; }
+uint16_t bleConsoleKnockCount() { return (uint16_t)g_knockCount; }
+uint16_t bleConsoleStreamMs() { return g_streamMs; }
+void bleConsoleSetStreamMs(uint16_t ms) { g_streamMs = ms; }
+
+static void bleSend(const uint8_t* buf, size_t len) {
+  g_uart.write(buf, len);  // BLEUart splits frames larger than the MTU across notifications
+}
+
+static void bleReply(void*, bool ok, const char* msg) {
+  uint8_t b[PROTO_MAX_FRAME];
+  bleSend(b, protoReply(b, ok, msg));
+}
+
+static size_t encodeStatus(uint8_t* b, StatusComp comp, const StatusData& d) {
+  switch (comp) {
+    case StatusComp::Power:
+      return protoStatusPower(b, d.restMv, d.sagMv, d.liveMv, d.tempC);
+    case StatusComp::Imu:
+      return protoStatusImu(b, d.imuPresent, protoI16(d.pitch * 10.0f), protoI16(d.ax * 1000.0f),
+                            protoI16(d.ay * 1000.0f), protoI16(d.az * 1000.0f), protoU16(d.mag * 1000.0f),
+                            protoI16(d.zero * 10.0f));
+    case StatusComp::Lora:
+      return protoStatusLora(b, d.fcnt, d.loraSession, d.lastPayload);
+    case StatusComp::Knock:
+      return protoStatusKnock(b, d.knocks);
+    case StatusComp::System:
+      return protoStatusSystem(b, d.bench, d.usb, d.mailInside, d.streamMs, d.fw);
+  }
+  return 0;
+}
+
+static void bleStatus(void*, StatusComp comp) {
+  StatusData d;
+  statusRead(d);
+  uint8_t b[PROTO_MAX_FRAME];
+  size_t n = encodeStatus(b, comp, d);
+  if (n) bleSend(b, n);
+}
+
+static const CmdOut kBleOut = {bleReply, bleStatus, nullptr};
 #endif
 
 static bool bleStart() {
@@ -79,7 +114,7 @@ static void blePollCommands() {
     char c = (char)g_uart.read();
     if (c == '\n' || c == '\r') {
       if (overflow) {
-        bleWrite(nullptr, "{\"status\":\"ERROR\",\"msg\":\"Line too long\"}");
+        bleReply(nullptr, false, "Line too long");
       } else if (len > 0) {
         line[len] = 0;
         cmdRunLine(line, CmdSource::Ble, kBleOut);
@@ -95,8 +130,8 @@ static void blePollCommands() {
 #endif
 }
 
-// Live knock counting plus the 1 Hz telemetry stream while a client is connected.
-static void bleStream(bool connected, uint32_t now, uint32_t& lastKnock, uint32_t& lastTelemetry, uint32_t& lastAdvLog) {
+// Live knock counting, plus binary knock and telemetry frames while a client is connected.
+static void bleStream(bool connected, uint32_t now, uint32_t& lastKnock, uint32_t& lastTelemetry) {
 #if ENABLE_BLE_MAINTENANCE
   AccelSample a = imuRead();
 
@@ -104,36 +139,19 @@ static void bleStream(bool connected, uint32_t now, uint32_t& lastKnock, uint32_
     g_knockCount++;
     DBG_PRINTF("[BLE KNOCK] #%lu detected! Mag: %.2fg\n", (unsigned long)g_knockCount, a.mag);
     if (connected) {
-      char json[64];
-      snprintf(json, sizeof(json), "{\"type\":\"knock\",\"count\":%lu,\"mag\":%.2f}", (unsigned long)g_knockCount, a.mag);
-      g_uart.println(json);
+      uint8_t b[PROTO_MAX_FRAME];
+      bleSend(b, protoKnock(b, (uint16_t)g_knockCount, protoU16(a.mag * 1000.0f)));
     }
   }
 
-  if (now - lastTelemetry <= 1000) return;
+  if (!connected || g_streamMs == 0 || now - lastTelemetry < g_streamMs) return;
   lastTelemetry = now;
-  int8_t temp = temperatureC();
-  uint16_t vbat = batteryMv();
-  uint32_t fcnt = lorawanFrameCounter();
-
-  if (connected) {
-    char json[448];
-    snprintf(json, sizeof(json),
-             "{\"type\":\"telemetry\",\"v_rest\":%u,\"v_sag\":%u,\"v_live\":%u,\"temp\":%d,\"tilt\":%.1f,"
-             "\"ax\":%.2f,\"ay\":%.2f,\"az\":%.2f,\"mag\":%.2f,\"zero\":%.1f,\"fcnt\":%lu,"
-             "\"lora_session\":\"%s\",\"last_payload\":\"%s\",\"knocks\":%lu,\"mail_inside\":%s,\"fw\":\"%s\"}",
-             batteryRestMv(), batterySagMv(), vbat, temp, a.pitch, a.x, a.y, a.z, a.mag, imuTiltZero(),
-             (unsigned long)fcnt, lorawanSessionStatus(), lorawanLastPayloadHex(), (unsigned long)g_knockCount,
-             stateMailInside() ? "true" : "false", FIRMWARE_VERSION);
-    g_uart.println(json);
-
-    DBG_PRINTF("[BLE CONNECTED] V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
-               vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, (unsigned long)g_knockCount, (unsigned long)fcnt);
-  } else if (now - lastAdvLog > 4000) {
-    lastAdvLog = now;
-    DBG_PRINTF("[BLE ADVERTISING] Device: '%s' | V_live: %u mV | Temp: %d °C | IMU: %s (Connect via Web Console)\n",
-               BLE_DEVICE_NAME, vbat, temp, imuPresent() ? "OK" : "NOT CONNECTED (plug into D4/D5)");
-  }
+  StatusData d;
+  statusRead(d);
+  uint8_t b[PROTO_MAX_FRAME];
+  bleSend(b, protoTelemetry(b, d.liveMv, d.tempC, protoI16(d.pitch * 10.0f), protoI16(d.ax * 1000.0f),
+                            protoI16(d.ay * 1000.0f), protoI16(d.az * 1000.0f), protoU16(d.mag * 1000.0f),
+                            d.knocks, d.mailInside));
 #endif
 }
 
@@ -151,7 +169,7 @@ void bleConsoleRun() {
   uint32_t lastTelemetry = 0;
   uint32_t lastKnock = 0;
   uint32_t lastBlink = 0;
-  uint32_t lastAdvLog = 0;
+  bool wasConnected = false;
 
   pinMode(LED_BLUE, OUTPUT);
   digitalWrite(LED_BLUE, XIAO_LED_OFF);
@@ -164,6 +182,12 @@ void bleConsoleRun() {
     uint32_t now = millis();
     bool connected = bleConnected();
     digitalWrite(LED_BLUE, connected ? XIAO_LED_ON : XIAO_LED_OFF);  // Solid blue when connected
+
+    if (connected != wasConnected) {
+      wasConnected = connected;
+      if (connected) bleConsoleSetStreamMs(BLE_STREAM_DEFAULT_MS);
+      DBG_PRINTLN(connected ? "[BLE] Client connected" : "[BLE] Client disconnected");
+    }
 
     if (connected) {
       lastActive = now;
@@ -181,8 +205,8 @@ void bleConsoleRun() {
       break;
     }
 
-    bleStream(connected, now, lastKnock, lastTelemetry, lastAdvLog);
-    delay(40);
+    bleStream(connected, now, lastKnock, lastTelemetry);
+    delay(20);  // loop period must stay under BLE_STREAM_MIN_MS
   }
 
   if (cmdSleepRequested()) {

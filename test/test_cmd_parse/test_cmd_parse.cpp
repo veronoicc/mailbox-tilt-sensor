@@ -95,6 +95,24 @@ static void test_output_cleared_on_failure() {
   TEST_ASSERT_EQUAL_CHAR(0, p.name[0]);
 }
 
+static void test_stream_ms() {
+  uint16_t ms = 1;
+  TEST_ASSERT_TRUE(cmdParseStreamMs("0", 50, 60000, ms));
+  TEST_ASSERT_EQUAL_UINT16(0, ms);
+  TEST_ASSERT_TRUE(cmdParseStreamMs("100", 50, 60000, ms));
+  TEST_ASSERT_EQUAL_UINT16(100, ms);
+  TEST_ASSERT_TRUE(cmdParseStreamMs("10", 50, 60000, ms));
+  TEST_ASSERT_EQUAL_UINT16(50, ms);  // clamped up
+  TEST_ASSERT_TRUE(cmdParseStreamMs("999999999", 50, 60000, ms));
+  TEST_ASSERT_EQUAL_UINT16(60000, ms);  // clamped down
+  ms = 7;
+  TEST_ASSERT_FALSE(cmdParseStreamMs("", 50, 60000, ms));
+  TEST_ASSERT_FALSE(cmdParseStreamMs("-5", 50, 60000, ms));
+  TEST_ASSERT_FALSE(cmdParseStreamMs("12x", 50, 60000, ms));
+  TEST_ASSERT_FALSE(cmdParseStreamMs("12345678901234567890", 50, 60000, ms));
+  TEST_ASSERT_EQUAL_UINT16(7, ms);  // untouched on failure
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_ble_form);
@@ -107,5 +125,6 @@ int main() {
   RUN_TEST(test_field_bounds);
   RUN_TEST(test_oversized_line);
   RUN_TEST(test_output_cleared_on_failure);
+  RUN_TEST(test_stream_ms);
   return UNITY_END();
 }

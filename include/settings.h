@@ -47,6 +47,9 @@
 #define BLE_HOLD_ANGLE_DEG         60.0f  // hold the flap past this angle...
 #define BLE_HOLD_SECONDS           15     // ...for this long to open the awake window
 #define ENABLE_SERIAL_CLI          true   // same commands as BLE over USB serial during the awake window
+#define BLE_STREAM_DEFAULT_MS      100    // binary telemetry interval on every new BLE connection
+#define BLE_STREAM_MIN_MS          50     // STREAM <ms> is clamped to this range (0 = off)
+#define BLE_STREAM_MAX_MS          60000
 
 // ── Heartbeat ──
 // 0 disables the timer and uses System-Off sleep (lowest drain). Any other value keeps the MCU in

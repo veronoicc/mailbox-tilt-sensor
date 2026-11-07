@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include "settings.h"
 #include "ble/console.h"
 #include "core/log.h"
@@ -26,34 +27,27 @@ static constexpr uint8_t MAX_DRAIN_FRAMES = 4;
 static bool g_sleepRequested = false;
 static uint8_t g_depth = 0;
 
-static void reply(const CmdOut& out, bool ok, const char* msg) {
-  char json[160];
-  snprintf(json, sizeof(json), "{\"status\":\"%s\",\"msg\":\"%s\"}", ok ? "OK" : "ERROR", msg);
-  out.write(out.ctx, json);
-}
+static void reply(const CmdOut& out, bool ok, const char* msg) { out.reply(out.ctx, ok, msg); }
 
 static void cmdRecalibrate(const ParsedLine&, CmdSource, const CmdOut& out) {
   float zero = imuCalibrateZero();
-  char json[160];
-  snprintf(json, sizeof(json), "{\"status\":\"OK\",\"msg\":\"Zero horizon calibrated\",\"zero_offset\":%.2f}", zero);
-  out.write(out.ctx, json);
   DBG_PRINTF("[CALIBRATION] New zero horizon offset: %.2f deg\n", zero);
+  reply(out, true, "Zero horizon calibrated");
+  out.status(out.ctx, StatusComp::Imu);
 }
 
 static void cmdTestUplink(const ParsedLine&, CmdSource, const CmdOut& out) {
   reply(out, true, "Triggering LoRaWAN test uplink...");
   // peak = current tilt, rest = zero offset so the console can show it.
   bool ok = lorawanSend(UplinkMsg::manualTest(imuRead().pitch, imuTiltZero()));
-  char json[200];
-  snprintf(json, sizeof(json),
-           "{\"status\":\"%s\",\"msg\":\"LoRaWAN test packet finished\",\"fcnt\":%lu,\"v_sag\":%u,\"payload\":\"%s\"}",
-           ok ? "OK" : "ERROR", (unsigned long)lorawanFrameCounter(), batterySagMv(), lorawanLastPayloadHex());
-  out.write(out.ctx, json);
+  reply(out, ok, ok ? "LoRaWAN test packet finished" : "LoRaWAN test packet failed");
+  out.status(out.ctx, StatusComp::Lora);
 }
 
 static void cmdResetKnocks(const ParsedLine&, CmdSource, const CmdOut& out) {
   bleConsoleResetKnocks();
   reply(out, true, "Knock counter reset to zero");
+  out.status(out.ctx, StatusComp::Knock);
 }
 
 static void cmdDfu(const ParsedLine&, CmdSource, const CmdOut& out) {
@@ -71,12 +65,48 @@ static void cmdSleep(const ParsedLine&, CmdSource, const CmdOut& out) {
 static void cmdHeartbeat(const ParsedLine&, CmdSource, const CmdOut& out) {
   bool ok = lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Requested));
   reply(out, ok, ok ? "Heartbeat sent" : "Heartbeat failed");
+  out.status(out.ctx, StatusComp::System);
 }
 
 static void cmdClear(const ParsedLine&, CmdSource src, const CmdOut& out) {
   stateSetMailInside(false);
   bool ok = lorawanSend(UplinkMsg::mailCleared(src == CmdSource::Downlink ? ClearSource::Downlink : ClearSource::Console));
   reply(out, ok, ok ? "Mail state cleared" : "Mail state cleared, uplink failed");
+  out.status(out.ctx, StatusComp::System);
+}
+
+static void cmdStatus(const ParsedLine& args, CmdSource, const CmdOut& out) {
+  static const char* const kNames[] = {"POWER", "IMU", "LORA", "KNOCK", "SYSTEM"};  // StatusComp 1..5
+  const char* arg = args.argc ? args.args[0] : "ALL";
+  if (strcasecmp(arg, "ALL") == 0) {
+    for (uint8_t c = 1; c <= 5; c++) out.status(out.ctx, (StatusComp)c);
+    return;
+  }
+  for (uint8_t c = 1; c <= 5; c++) {
+    if (strcasecmp(arg, kNames[c - 1]) == 0) {
+      out.status(out.ctx, (StatusComp)c);
+      return;
+    }
+  }
+  reply(out, false, "Unknown component. Use POWER|IMU|LORA|KNOCK|SYSTEM|ALL");
+}
+
+static void cmdStream(const ParsedLine& args, CmdSource src, const CmdOut& out) {
+  if (src != CmdSource::Ble) {
+    reply(out, false, "STREAM is only available over BLE");
+    return;
+  }
+  uint16_t ms;
+  if (!args.argc || !cmdParseStreamMs(args.args[0], BLE_STREAM_MIN_MS, BLE_STREAM_MAX_MS, ms)) {
+    reply(out, false, "Usage: STREAM <ms>, 0 = off");
+    return;
+  }
+  bleConsoleSetStreamMs(ms);
+  char msg[CMD_REPLY_MAX + 1];
+  if (ms) snprintf(msg, sizeof msg, "Stream every %u ms", ms);
+  else snprintf(msg, sizeof msg, "Stream off");
+  reply(out, true, msg);
+  out.status(out.ctx, StatusComp::System);
 }
 
 static void cmdHelp(const ParsedLine&, CmdSource, const CmdOut& out);
@@ -89,15 +119,24 @@ static const CmdDef kCommands[] = {
     {"SLEEP", 0, 0, cmdSleep},
     {"HEARTBEAT", 0, 0x01, cmdHeartbeat},
     {"CLEAR", 0, 0x02, cmdClear},
+    {"STATUS", 1, 0, cmdStatus},
+    {"STREAM", 1, 0, cmdStream},
     {"HELP", 0, 0, cmdHelp},
 };
 static constexpr size_t kCommandCount = sizeof(kCommands) / sizeof(kCommands[0]);
 
+// Replies are capped at CMD_REPLY_MAX bytes on the BLE wire, so the list is split across several lines.
 static void cmdHelp(const ParsedLine&, CmdSource, const CmdOut& out) {
-  char msg[128] = "Valid:";
+  char msg[CMD_REPLY_MAX + 1] = "Valid:";
   size_t n = strlen(msg);
-  for (size_t i = 0; i < kCommandCount && n < sizeof(msg); i++) {
-    n += snprintf(msg + n, sizeof(msg) - n, "%s%s", i ? ", " : " ", kCommands[i].name);
+  for (size_t i = 0; i < kCommandCount; i++) {
+    bool last = i + 1 == kCommandCount;
+    if (n + 1 + strlen(kCommands[i].name) + !last > CMD_REPLY_MAX) {
+      reply(out, true, msg);
+      n = 0;
+      msg[0] = 0;
+    }
+    n += snprintf(msg + n, sizeof(msg) - n, "%s%s%s", n ? " " : "", kCommands[i].name, last ? "" : ",");
   }
   reply(out, true, msg);
 }

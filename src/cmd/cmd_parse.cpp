@@ -63,3 +63,14 @@ bool cmdParseLine(const char* line, ParsedLine& out) {
   }
   return true;
 }
+
+bool cmdParseStreamMs(const char* s, uint16_t minMs, uint16_t maxMs, uint16_t& ms) {
+  if (!s || !*s || strlen(s) > 9) return false;  // 9 digits cannot overflow uint32_t
+  uint32_t v = 0;
+  for (; *s; s++) {
+    if (*s < '0' || *s > '9') return false;
+    v = v * 10 + (uint32_t)(*s - '0');
+  }
+  ms = v == 0 ? 0 : (uint16_t)(v < minMs ? minMs : v > maxMs ? maxMs : v);
+  return true;
+}

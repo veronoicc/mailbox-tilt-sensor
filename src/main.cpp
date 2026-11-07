@@ -48,8 +48,17 @@ static void startSerial() {
   DBG_PRINTLN("==================================================");
 }
 
-static void logReply(void*, const char* line) { DBG_PRINTLN(line); }
-static const CmdOut kLogOut = {logReply, nullptr};
+// Downlink-triggered commands have no console to answer; their output goes to the debug log.
+static void logReply(void*, bool ok, const char* msg) { DBG_PRINTF("[%s] %s\n", ok ? "OK" : "ERROR", msg); }
+
+static void logStatus(void*, StatusComp comp) {
+  if (!DEBUG_SERIAL) return;
+  char line[160];
+  statusText(comp, line, sizeof line);
+  Serial.println(line);
+}
+
+static const CmdOut kLogOut = {logReply, logStatus, nullptr};
 
 // Stay awake in the BLE/serial window for as long as USB is plugged in or the IMU is absent.
 static void holdWhileBench() {
