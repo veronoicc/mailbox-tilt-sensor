@@ -11,12 +11,12 @@ const ui = {};
 [
   "browserModal", "btnCloseModal", "btnDismissModal", "deviceStatus",
   "disconnectedView", "connectedView", "btnConnect", "btnDisconnect",
-  "btnRecalibrate", "btnTestUplink", "btnResetKnocks", "btnDfu",
+  "btnRecalibrate", "btnTestUplink", "btnResetKnocks", "btnDfu", "btnHeartbeat", "btnClear",
   "inputPin", "logView", "btnClearLog",
   "valVRest", "valVSag", "valVLive", "valBatHealth", "valTilt", "valTiltTag",
   "valAccel", "valMag", "valZero", "valKnocks", "valKnockPeak",
   "knockPulseIndicator", "valLoraSession", "valLoraTag", "valFCnt",
-  "valLastPayload", "valTemp", "valTempTag", "firmwareVersion",
+  "valLastPayload", "valTemp", "valTempTag", "firmwareVersion", "valMailInside",
 ].forEach((id) => { ui[id] = $(id); });
 
 let device = null;
@@ -138,6 +138,7 @@ function renderTelemetry(t) {
   ui.valLoraSession.textContent = t.lora_session;
   ui.valLoraTag.textContent = t.lora_session;
   ui.valFCnt.textContent = t.fcnt;
+  ui.valMailInside.textContent = t.mail_inside ? "Yes" : "No";
   ui.valLastPayload.textContent = t.last_payload || "None";
 
   ui.valTemp.textContent = t.temp;
@@ -193,6 +194,8 @@ const commandButtons = {
   btnTestUplink: "TEST_UPLINK",
   btnResetKnocks: "RESET_KNOCKS",
   btnDfu: "DFU",
+  btnHeartbeat: "HEARTBEAT",
+  btnClear: "CLEAR",
 };
 for (const [id, action] of Object.entries(commandButtons)) {
   ui[id].addEventListener("click", () => sendCommand(action));

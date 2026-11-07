@@ -1,27 +1,36 @@
-// Web Bluetooth maintenance console.
+// Awake window: Web Bluetooth maintenance console + serial CLI, one timeout.
 #include "ble/console.h"
 #include "settings.h"
-
-#if ENABLE_BLE_MAINTENANCE
 #include <Arduino.h>
-#include <bluefruit.h>
 #include <stdio.h>
 #include "board.h"
 #include "version.h"
+#include "cmd/cmd.h"
+#include "cmd/serial_cli.h"
 #include "core/log.h"
 #include "core/power.h"
+#include "core/state.h"
 #include "lora/lorawan.h"
 #include "motion/imu.h"
 #include "motion/knock.h"
+
+#if ENABLE_BLE_MAINTENANCE
+#include <bluefruit.h>
 
 static constexpr size_t MAX_LINE = 64;  // BLE input is untrusted; bound the command buffer.
 
 static BLEUart g_uart;
 static uint32_t g_knockCount = 0;
-static bool g_sleepRequested = false;
 static bool g_bleStarted = false;
 
-static bool startAdvertising() {
+static void bleWrite(void*, const char* line) { g_uart.println(line); }
+static const CmdOut kBleOut = {bleWrite, nullptr};
+
+void bleConsoleResetKnocks() { g_knockCount = 0; }
+#endif
+
+static bool bleStart() {
+#if ENABLE_BLE_MAINTENANCE
   if (!g_bleStarted) {
     Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
     Bluefruit.begin();
@@ -40,187 +49,148 @@ static bool startAdvertising() {
     g_bleStarted = true;
   }
   return Bluefruit.Advertising.start(0);  // 0 = continuous radio broadcast
+#else
+  return false;
+#endif
 }
 
-static void reply(bool ok, const char* msg) {
-  char json[160];
-  snprintf(json, sizeof(json), "{\"status\":\"%s\",\"msg\":\"%s\"}", ok ? "OK" : "ERROR", msg);
-  g_uart.println(json);
+static bool bleConnected() {
+#if ENABLE_BLE_MAINTENANCE
+  return Bluefruit.connected();
+#else
+  return false;
+#endif
 }
 
-static void handleCommand(const String& line) {
-  const String pinPrefix = "PIN:";
-  int pinIdx = line.indexOf(pinPrefix);
-  int cmdIdx = line.indexOf("CMD:");
-
-  if (pinIdx == -1 || cmdIdx == -1) {
-    reply(false, "Malformed command. Format: PIN:xxxxxx CMD:yyyy");
-    return;
-  }
-
-  String enteredPin = line.substring(pinIdx + pinPrefix.length(), line.indexOf(' ', pinIdx));
-  enteredPin.trim();
-
-  if (enteredPin != BLE_AUTH_PIN) {
-    DBG_PRINTF("[BLE AUTH FAIL] Invalid PIN attempted: %s\n", enteredPin.c_str());
-    reply(false, "Authentication failed: Invalid PIN");
-    return;
-  }
-
-  String action = line.substring(cmdIdx + 4);
-  action.trim();
-  action.toUpperCase();
-
-  DBG_PRINTF("[BLE COMMAND] Executing authorized action: %s\n", action.c_str());
-
-  if (action == "RECALIBRATE") {
-    float zero = imuCalibrateZero();
-    char json[160];
-    snprintf(json, sizeof(json), "{\"status\":\"OK\",\"msg\":\"Zero horizon calibrated\",\"zero_offset\":%.2f}", zero);
-    g_uart.println(json);
-    DBG_PRINTF("[CALIBRATION] New zero horizon offset: %.2f deg\n", zero);
-  } else if (action == "TEST_UPLINK") {
-    reply(true, "Triggering LoRaWAN test uplink...");
-    // Byte 3 carries the zero offset so the console can show it.
-    bool ok = lorawanSendEvent(UplinkEvent::ManualTest, imuRead().pitch, imuTiltZero(), 0);
-    char json[200];
-    snprintf(json, sizeof(json),
-             "{\"status\":\"%s\",\"msg\":\"LoRaWAN test packet finished\",\"fcnt\":%lu,\"v_sag\":%u,\"payload\":\"%s\"}",
-             ok ? "OK" : "ERROR", (unsigned long)lorawanFrameCounter(), batterySagMv(), lorawanLastPayloadHex());
-    g_uart.println(json);
-  } else if (action == "RESET_KNOCKS") {
-    g_knockCount = 0;
-    reply(true, "Knock counter reset to zero");
-  } else if (action == "DFU") {
-    reply(true, "Rebooting to UF2 Bootloader...");
-    delay(300);
-    enterUf2Dfu();
-  } else if (action == "SLEEP") {
-    reply(true, "Entering Deep Sleep...");
-    delay(300);
-    g_sleepRequested = true;
-  } else {
-    reply(false, "Unknown action. Valid: RECALIBRATE, TEST_UPLINK, RESET_KNOCKS, DFU, SLEEP");
-  }
+static void bleStop() {
+#if ENABLE_BLE_MAINTENANCE
+  Bluefruit.disconnect(0);
+  Bluefruit.Advertising.stop();
+#endif
 }
 
-// Drains the UART into line; returns true if at least one command ran.
-static bool pollCommands(String& line) {
-  bool ran = false;
+// Drains the UART; every complete line goes to the command interpreter.
+static void blePollCommands() {
+#if ENABLE_BLE_MAINTENANCE
+  static char line[MAX_LINE + 1];
+  static size_t len = 0;
+  static bool overflow = false;
   while (g_uart.available()) {
     char c = (char)g_uart.read();
     if (c == '\n' || c == '\r') {
-      if (line.length() > 0) {
-        handleCommand(line);
-        line = "";
-        ran = true;
+      if (overflow) {
+        bleWrite(nullptr, "{\"status\":\"ERROR\",\"msg\":\"Line too long\"}");
+      } else if (len > 0) {
+        line[len] = 0;
+        cmdRunLine(line, CmdSource::Ble, kBleOut);
       }
+      len = 0;
+      overflow = false;
+    } else if (len < MAX_LINE) {
+      line[len++] = c;
     } else {
-      if (line.length() >= MAX_LINE) line = "";
-      line += c;
+      overflow = true;
     }
   }
-  return ran;
+#endif
 }
 
-void bleConsoleRun(uint32_t idleTimeoutS) {
-  DBG_PRINTLN("\n>>> Starting WebBluetooth Maintenance Mode <<<");
-  DBG_PRINTF("Device Name: %s | PIN: %s | Inactivity Timeout: %lu s\n", BLE_DEVICE_NAME, BLE_AUTH_PIN, (unsigned long)idleTimeoutS);
-  DBG_PRINTLN("Mode: Stays awake indefinitely while client device is connected.");
+// Live knock counting plus the 1 Hz telemetry stream while a client is connected.
+static void bleStream(bool connected, uint32_t now, uint32_t& lastKnock, uint32_t& lastTelemetry, uint32_t& lastAdvLog) {
+#if ENABLE_BLE_MAINTENANCE
+  AccelSample a = imuRead();
 
-  bool advOk = startAdvertising();
-  DBG_PRINTF("[BLE] Radio Advertising Broadcast: %s\n", advOk ? "ACTIVE (Broadcasting)" : "FAILED (Data Size Error)");
+  if (knockHit(a.mag, now, lastKnock)) {
+    g_knockCount++;
+    DBG_PRINTF("[BLE KNOCK] #%lu detected! Mag: %.2fg\n", (unsigned long)g_knockCount, a.mag);
+    if (connected) {
+      char json[64];
+      snprintf(json, sizeof(json), "{\"type\":\"knock\",\"count\":%lu,\"mag\":%.2f}", (unsigned long)g_knockCount, a.mag);
+      g_uart.println(json);
+    }
+  }
 
-  g_sleepRequested = false;
-  uint32_t lastActivity = millis();
+  if (now - lastTelemetry <= 1000) return;
+  lastTelemetry = now;
+  int8_t temp = temperatureC();
+  uint16_t vbat = batteryMv();
+  uint32_t fcnt = lorawanFrameCounter();
+
+  if (connected) {
+    char json[448];
+    snprintf(json, sizeof(json),
+             "{\"type\":\"telemetry\",\"v_rest\":%u,\"v_sag\":%u,\"v_live\":%u,\"temp\":%d,\"tilt\":%.1f,"
+             "\"ax\":%.2f,\"ay\":%.2f,\"az\":%.2f,\"mag\":%.2f,\"zero\":%.1f,\"fcnt\":%lu,"
+             "\"lora_session\":\"%s\",\"last_payload\":\"%s\",\"knocks\":%lu,\"mail_inside\":%s,\"fw\":\"%s\"}",
+             batteryRestMv(), batterySagMv(), vbat, temp, a.pitch, a.x, a.y, a.z, a.mag, imuTiltZero(),
+             (unsigned long)fcnt, lorawanSessionStatus(), lorawanLastPayloadHex(), (unsigned long)g_knockCount,
+             stateMailInside() ? "true" : "false", FIRMWARE_VERSION);
+    g_uart.println(json);
+
+    DBG_PRINTF("[BLE CONNECTED] V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
+               vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, (unsigned long)g_knockCount, (unsigned long)fcnt);
+  } else if (now - lastAdvLog > 4000) {
+    lastAdvLog = now;
+    DBG_PRINTF("[BLE ADVERTISING] Device: '%s' | V_live: %u mV | Temp: %d °C | IMU: %s (Connect via Web Console)\n",
+               BLE_DEVICE_NAME, vbat, temp, imuPresent() ? "OK" : "NOT CONNECTED (plug into D4/D5)");
+  }
+#endif
+}
+
+void bleConsoleRun() {
+  DBG_PRINTLN("\n>>> Starting awake window <<<");
+  DBG_PRINTF("Device Name: %s | PIN: %s | Timeout: %u s\n", BLE_DEVICE_NAME, BLE_AUTH_PIN, (unsigned)BLE_TIMEOUT_SECONDS);
+  DBG_PRINTLN("Mode: Stays awake while a client is connected.");
+
+  bool advOk = bleStart();
+  DBG_PRINTF("[BLE] Radio Advertising Broadcast: %s\n", advOk ? "ACTIVE (Broadcasting)" : "OFF/FAILED");
+  serialCliBegin();
+
+  cmdClearSleepRequest();
+  uint32_t lastActive = millis();  // window opened, or a client was last connected
   uint32_t lastTelemetry = 0;
   uint32_t lastKnock = 0;
   uint32_t lastBlink = 0;
-  uint32_t lastSerialAdvLog = 0;
-  String line = "";
+  uint32_t lastAdvLog = 0;
 
   pinMode(LED_BLUE, OUTPUT);
   digitalWrite(LED_BLUE, XIAO_LED_OFF);
 
-  while (!g_sleepRequested) {
+  while (!cmdSleepRequested()) {
     watchdogFeed();
+    serialCliPoll();
+    blePollCommands();
 
-    if (pollCommands(line)) lastActivity = millis();  // Valid interaction refreshes the timeout.
-
-    bool connected = Bluefruit.connected();
+    uint32_t now = millis();
+    bool connected = bleConnected();
     digitalWrite(LED_BLUE, connected ? XIAO_LED_ON : XIAO_LED_OFF);  // Solid blue when connected
 
     if (connected) {
-      lastActivity = millis();
+      lastActive = now;
     } else if (benchMode()) {
       // Keep advertising indefinitely for bench testing.
-      lastActivity = millis();
+      lastActive = now;
       // Heartbeat pulse: LED is dark and flashes ON for 40ms every 2.5s
-      if (millis() - lastBlink > 2500) {
-        lastBlink = millis();
+      if (now - lastBlink > 2500) {
+        lastBlink = now;
         digitalWrite(LED_BLUE, XIAO_LED_ON);
         delay(40);
         digitalWrite(LED_BLUE, XIAO_LED_OFF);
       }
-    } else if (millis() - lastActivity > idleTimeoutS * 1000UL) {
+    } else if (now - lastActive > BLE_TIMEOUT_SECONDS * 1000UL) {
       break;
     }
 
-    AccelSample a = imuRead();
-    uint32_t now = millis();
-
-    // Live knock detection while the console is up
-    if (knockHit(a.mag, now, lastKnock)) {
-      g_knockCount++;
-      lastActivity = now;
-      DBG_PRINTF("[BLE KNOCK] #%lu detected! Mag: %.2fg\n", (unsigned long)g_knockCount, a.mag);
-
-      if (connected) {
-        char json[64];
-        snprintf(json, sizeof(json), "{\"type\":\"knock\",\"count\":%lu,\"mag\":%.2f}", (unsigned long)g_knockCount, a.mag);
-        g_uart.println(json);
-      }
-    }
-
-    // Telemetry stream every 1000 ms
-    if (now - lastTelemetry > 1000) {
-      lastTelemetry = now;
-      int8_t temp = temperatureC();
-      uint16_t vbat = batteryMv();
-      uint32_t fcnt = lorawanFrameCounter();
-
-      if (connected) {
-        char json[384];
-        snprintf(json, sizeof(json),
-                 "{\"type\":\"telemetry\",\"v_rest\":%u,\"v_sag\":%u,\"v_live\":%u,\"temp\":%d,\"tilt\":%.1f,"
-                 "\"ax\":%.2f,\"ay\":%.2f,\"az\":%.2f,\"mag\":%.2f,\"zero\":%.1f,\"fcnt\":%lu,"
-                 "\"lora_session\":\"%s\",\"last_payload\":\"%s\",\"knocks\":%lu,\"fw\":\"%s\"}",
-                 batteryRestMv(), batterySagMv(), vbat, temp, a.pitch, a.x, a.y, a.z, a.mag, imuTiltZero(),
-                 (unsigned long)fcnt, lorawanSessionStatus(), lorawanLastPayloadHex(), (unsigned long)g_knockCount,
-                 FIRMWARE_VERSION);
-        g_uart.println(json);
-
-        DBG_PRINTF("[BLE CONNECTED] V_live=%umV Pitch=%.1f° Accel=(%.2f,%.2f,%.2f) Mag=%.2fg Temp=%d°C Knocks=%lu FCnt=%lu\n",
-                   vbat, a.pitch, a.x, a.y, a.z, a.mag, temp, (unsigned long)g_knockCount, (unsigned long)fcnt);
-      } else if (now - lastSerialAdvLog > 4000) {
-        lastSerialAdvLog = now;
-        DBG_PRINTF("[BLE ADVERTISING] Device: '%s' | V_live: %u mV | Temp: %d °C | IMU: %s (Connect via Web Console)\n",
-                   BLE_DEVICE_NAME, vbat, temp, imuPresent() ? "OK" : "NOT CONNECTED (plug into D4/D5)");
-      }
-    }
-
+    bleStream(connected, now, lastKnock, lastTelemetry, lastAdvLog);
     delay(40);
   }
 
-  if (g_sleepRequested) {
-    DBG_PRINTLN("[BLE] Sleep requested. Terminating BLE and entering deep sleep.");
+  if (cmdSleepRequested()) {
+    DBG_PRINTLN("[AWAKE] Sleep requested. Closing window and entering deep sleep.");
   } else {
-    DBG_PRINTLN("[BLE TIMEOUT] Inactivity period reached. Terminating BLE and entering deep sleep.");
+    DBG_PRINTLN("[AWAKE TIMEOUT] No client for the timeout period. Closing window and entering deep sleep.");
   }
 
-  Bluefruit.disconnect(0);
-  Bluefruit.Advertising.stop();
+  bleStop();
   pinMode(LED_BLUE, INPUT);
 }
-
-#endif

@@ -50,7 +50,7 @@
           <!-- Disconnected View -->
           <div id="disconnectedView">
             <p class="card-desc">
-              Advertises for 15s on power-up or reboot, or hold flap open past 60° for 15s. Stays active indefinitely while connected.
+              Advertises for 60s on power-up or reboot, or hold flap open past 60° for 15s. Stays active indefinitely while connected.
             </p>
             <button type="button" class="btn btn-primary" id="btnConnect">Connect</button>
           </div>
@@ -140,6 +140,10 @@
                   <span class="row-val" id="valLoraSession">--</span>
                 </div>
                 <div class="telemetry-row">
+                  <span class="row-label">Mail inside</span>
+                  <span class="row-val" id="valMailInside">--</span>
+                </div>
+                <div class="telemetry-row">
                   <span class="row-label">Frame counter (FCntUp)</span>
                   <span class="row-val" id="valFCnt">--</span>
                 </div>
@@ -182,6 +186,8 @@
               <div class="controls-buttons">
                 <button type="button" class="btn btn-secondary" id="btnRecalibrate">Calibrate zero</button>
                 <button type="button" class="btn btn-primary" id="btnTestUplink">Test LoRa uplink</button>
+                <button type="button" class="btn btn-secondary" id="btnHeartbeat">Send heartbeat</button>
+                <button type="button" class="btn btn-secondary" id="btnClear">Clear mail state</button>
                 <button type="button" class="btn btn-secondary" id="btnResetKnocks">Reset knocks</button>
                 <button type="button" class="btn btn-danger" id="btnDfu">Reboot to DFU</button>
                 <button type="button" class="btn btn-secondary" id="btnDisconnect">Disconnect</button>
