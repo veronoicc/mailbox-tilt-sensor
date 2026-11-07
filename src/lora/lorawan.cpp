@@ -69,6 +69,8 @@ static uint8_t* signedNonces() {
   return g_node.getBufferNonces();  // recomputes the signature over the patched header
 }
 
+static constexpr uint32_t RETRY_DELAY_MS = 5000;  // well under the 30 s watchdog
+
 static bool sendPacket(uint8_t* payload, size_t len) {
   watchdogFeed();
   formatHex(payload, len);
@@ -182,7 +184,14 @@ bool lorawanSend(UplinkMsg msg) {
   if (!msg.hasTilt) msg.peakTiltDeg = msg.restTiltDeg = imuRead().pitch;
   uint8_t payload[UPLINK_SIZE];
   encodeUplink(msg, payload);
-  return sendPacket(payload, UPLINK_SIZE);
+  for (uint8_t attempt = 0;; attempt++) {
+    if (sendPacket(payload, UPLINK_SIZE)) return true;
+    if (attempt >= LORAWAN_MAX_RETRIES) return false;
+    DBG_PRINTF("[LoRaWAN TX] Retry %u/%u in %u ms\n", attempt + 1, (unsigned)LORAWAN_MAX_RETRIES, (unsigned)RETRY_DELAY_MS);
+    watchdogFeed();
+    delay(RETRY_DELAY_MS);  // let the gateway/duty cycle recover; the retry rejoins if needed
+    watchdogFeed();
+  }
 }
 
 bool lorawanTakeDownlink(uint8_t& fPort, uint8_t* buf, size_t cap, size_t& len) {

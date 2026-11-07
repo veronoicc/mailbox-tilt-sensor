@@ -15,6 +15,7 @@
 #define LORAWAN_BAND               EU868
 #define ENABLE_ADR                 true   // let TTN lower data rate / TX power
 #define ENABLE_SESSION_PERSISTENCE true   // keep the session in retained RAM across System-Off
+#define LORAWAN_MAX_RETRIES        3      // extra send attempts after a failed join/uplink (0 = no retry)
 
 // ── System ──
 #define ENABLE_WATCHDOG            true   // hardware watchdog resets a frozen CPU
