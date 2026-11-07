@@ -17,13 +17,13 @@ const ui = {};
   "valAccel", "valMag", "valZero", "valKnocks", "valKnockPeak",
   "knockPulseIndicator", "valLoraSession", "valLoraTag", "valFCnt",
   "valLastPayload", "valTemp", "valTempTag", "firmwareVersion", "valMailInside",
+  "btnStatus", "inputStream", "btnStream", "valBench", "valUsb",
 ].forEach((id) => { ui[id] = $(id); });
 
 let device = null;
 let rxChar = null;
-let lineBuffer = "";
 let knockTimer = null;
-const decoder = new TextDecoder();
+let protoDecoder = createProtoDecoder(handleFrame);
 const encoder = new TextEncoder();
 
 function log(line) {
@@ -78,7 +78,8 @@ async function connect() {
 
     setStatus("connected", "connected");
     showConnected(true);
-    log("Connected. Live telemetry stream active.");
+    log("Connected.");
+    await sendCommand("STATUS");
   } catch (err) {
     setStatus("connection failed", "error");
     log("Connection error: " + err.message);
@@ -89,69 +90,90 @@ function onDisconnected() {
   setStatus("disconnected", "disconnected");
   showConnected(false);
   rxChar = null;
+  protoDecoder = createProtoDecoder(handleFrame);
   log("Device disconnected.");
 }
 
 function onNotify(event) {
-  lineBuffer += decoder.decode(event.target.value, { stream: true });
-  const lines = lineBuffer.split("\n");
-  lineBuffer = lines.pop();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed) handleLine(trimmed);
-  }
+  const v = event.target.value;
+  protoDecoder(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
 }
 
-function handleLine(line) {
-  try {
-    const data = JSON.parse(line);
-    if (data.type === "telemetry") renderTelemetry(data);
-    else if (data.type === "knock") renderKnock(data);
-    else log(`[RECV] ${line}`);
-  } catch (e) {
-    log(`[RECV RAW] ${line}`);
-  }
+function handleFrame(f) {
+  if (f.type === "telemetry") renderTelemetry(f);
+  else if (f.type === "knock") renderKnock(f);
+  else if (f.type === "reply") log(`[${f.ok ? "OK" : "ERROR"}] ${f.message}`);
+  else if (f.type === "status") renderStatus(f);
+}
+
+function renderNoImu() {
+  ui.valTilt.textContent = "0.0";
+  ui.valTiltTag.textContent = "No IMU";
+  ui.valAccel.textContent = "Not connected (D4/D5)";
+  ui.valMag.textContent = "0.00";
+}
+
+function renderMail(inside) {
+  ui.valMailInside.textContent = inside ? "Yes" : "No";
 }
 
 function renderTelemetry(t) {
-  ui.valVRest.textContent = (t.v_rest / 1000).toFixed(2);
-  ui.valVSag.textContent = t.v_sag;
   ui.valVLive.textContent = (t.v_live / 1000).toFixed(2) + " V";
-  ui.valBatHealth.textContent = batteryHealth(t.v_rest);
 
   const imuAttached = t.ax !== 0 || t.ay !== 0 || t.az !== 0 || t.mag !== 0;
   if (imuAttached) {
-    ui.valTilt.textContent = t.tilt.toFixed(1);
-    ui.valTiltTag.textContent = t.tilt.toFixed(1) + "°";
+    ui.valTilt.textContent = t.pitch.toFixed(1);
+    ui.valTiltTag.textContent = t.pitch.toFixed(1) + "°";
     ui.valAccel.textContent = `X:${t.ax.toFixed(2)} Y:${t.ay.toFixed(2)} Z:${t.az.toFixed(2)}`;
     ui.valMag.textContent = t.mag.toFixed(2);
   } else {
-    ui.valTilt.textContent = "0.0";
-    ui.valTiltTag.textContent = "No IMU";
-    ui.valAccel.textContent = "Not connected (D4/D5)";
-    ui.valMag.textContent = "0.00";
+    renderNoImu();
   }
-  ui.valZero.textContent = t.zero.toFixed(1);
 
   ui.valKnocks.textContent = t.knocks;
-
-  ui.valLoraSession.textContent = t.lora_session;
-  ui.valLoraTag.textContent = t.lora_session;
-  ui.valFCnt.textContent = t.fcnt;
-  ui.valMailInside.textContent = t.mail_inside ? "Yes" : "No";
-  ui.valLastPayload.textContent = t.last_payload || "None";
-
+  renderMail(t.mail_inside);
   ui.valTemp.textContent = t.temp;
   ui.valTempTag.textContent = t.temp + " °C";
-  ui.firmwareVersion.textContent = "v" + t.fw;
+}
 
-  log(`[TELEMETRY] Pitch: ${t.tilt}° | V_live: ${(t.v_live / 1000).toFixed(2)}V | Knocks: ${t.knocks} | FCnt: ${t.fcnt}`);
+// STATUS frames carry the slow-changing fields (one component per frame).
+function renderStatus(s) {
+  switch (s.name) {
+    case "power":
+      ui.valVRest.textContent = (s.v_rest / 1000).toFixed(2);
+      ui.valVSag.textContent = s.v_sag;
+      ui.valVLive.textContent = (s.v_live / 1000).toFixed(2) + " V";
+      ui.valBatHealth.textContent = batteryHealth(s.v_rest);
+      ui.valTemp.textContent = s.temp;
+      ui.valTempTag.textContent = s.temp + " °C";
+      break;
+    case "imu":
+      ui.valZero.textContent = s.zero.toFixed(1);
+      if (!s.present) renderNoImu();
+      break;
+    case "lora":
+      ui.valLoraSession.textContent = s.session;
+      ui.valLoraTag.textContent = s.session;
+      ui.valFCnt.textContent = s.fcnt;
+      ui.valLastPayload.textContent = s.last_payload || "None";
+      break;
+    case "knock":
+      ui.valKnocks.textContent = s.count;
+      break;
+    case "system":
+      ui.firmwareVersion.textContent = "v" + s.fw;
+      ui.valBench.textContent = s.bench ? "On" : "Off";
+      ui.valUsb.textContent = s.usb ? "Connected" : "No";
+      renderMail(s.mail_inside);
+      ui.inputStream.value = s.stream_ms;
+      break;
+  }
 }
 
 function renderKnock(k) {
   ui.valKnocks.textContent = k.count;
   ui.valKnockPeak.textContent = k.mag.toFixed(2);
-  ui.knockPulseIndicator.textContent = `Hit #${k.count} (${k.mag}g)`;
+  ui.knockPulseIndicator.textContent = `Hit #${k.count} (${k.mag.toFixed(2)}g)`;
   ui.knockPulseIndicator.dataset.hit = "active";
 
   clearTimeout(knockTimer);
@@ -160,7 +182,7 @@ function renderKnock(k) {
     ui.knockPulseIndicator.textContent = "Ready";
   }, 600);
 
-  log(`*** [KNOCK HIT] #${k.count} registered | Peak force: ${k.mag}g ***`);
+  log(`*** [KNOCK HIT] #${k.count} registered | Peak force: ${k.mag.toFixed(2)}g ***`);
 }
 
 async function sendCommand(action) {
@@ -200,6 +222,16 @@ const commandButtons = {
 for (const [id, action] of Object.entries(commandButtons)) {
   ui[id].addEventListener("click", () => sendCommand(action));
 }
+
+ui.btnStatus.addEventListener("click", () => sendCommand("STATUS"));
+ui.btnStream.addEventListener("click", () => {
+  const ms = Number.parseInt(ui.inputStream.value, 10);
+  if (!Number.isInteger(ms) || ms < 0) {
+    log("Error: stream interval must be 0 (off) or milliseconds.");
+    return;
+  }
+  sendCommand(`STREAM ${ms}`);
+});
 
 ui.btnDisconnect.addEventListener("click", async () => {
   await sendCommand("SLEEP");
