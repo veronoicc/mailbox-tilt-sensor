@@ -157,10 +157,10 @@ Every uplink is the same fixed 8-byte frame; only the reason differs.
 | **0** | `reason` | `uint8` | `0x01`-`0x07` | `0x01` mail inserted, `0x02` mail cleared, `0x03` heartbeat (timer), `0x04` heartbeat requested (console or downlink), `0x05` heartbeat on startup, `0x06` heartbeat poll (flap held open), `0x07` manual test (from the console). |
 | **1** | `battery` | `uint8` | `(mV - 2000) / 10` | Resting battery voltage in mV (2000–4550). |
 | **2** | `battery_sag` | `uint8` | `mV / 5` | Battery voltage drop in mV under LoRa TX load (ESR health check). |
-| **3** | `temperature_c` | `int8` | -40 °C to +85 °C | Internal temperature from the on-die sensor. |
+| **3** | `temperature` | `int8` | -40 °C to +85 °C | Internal temperature in °C from the on-die sensor. |
 | **4** | `mail_inside` | `uint8` | `0`/`1` | Mail-inside state at send time. |
-| **5** | `peak_tilt_deg` | `uint8` | 0°–90° | Peak tilt during the flap event. For every other reason: the current tilt. |
-| **6** | `resting_tilt_deg` | `uint8` | 0°–90° | Tilt after the flap settled (**> 10° on a delivery means the flap is jammed open**). For every other reason: the current tilt. |
+| **5** | `peak_tilt` | `uint8` | 0°–90° | Peak tilt in degrees during the flap event. For every other reason: the current tilt. |
+| **6** | `resting_tilt` | `uint8` | 0°–90° | Tilt in degrees after the flap settled (**> 10° on a delivery means the flap is jammed open**). For every other reason: the current tilt. |
 | **7** | `open_duration` | `uint8` | 100 ms steps | How long the flap was open, in ms. `0` for every reason except `mail_inserted`. |
 
 Decoded JSON output example (`mail_inserted`; `is_jammed` and `mail_volume` appear only for this reason):
@@ -169,10 +169,10 @@ Decoded JSON output example (`mail_inserted`; `is_jammed` and `mail_volume` appe
   "reason": "mail_inserted",
   "battery": 3010,
   "battery_sag": 45,
-  "temperature_c": 18,
+  "temperature": 18,
   "mail_inside": true,
-  "peak_tilt_deg": 48,
-  "resting_tilt_deg": 0,
+  "peak_tilt": 48,
+  "resting_tilt": 0,
   "open_duration": 800,
   "is_jammed": false,
   "mail_volume": "large_envelope"
@@ -252,7 +252,7 @@ You do **not** need to maintain manual MQTT configuration files. Home Assistant 
 1. In Home Assistant, go to **Settings -> Devices & Services -> Add Integration**.
 2. Search for **The Things Network**.
 3. Follow the standard setup wizard to connect your TTN account/cluster.
-4. Your mailbox node and its decoded telemetry (`battery`, `peak_tilt_deg`, `reason`, `is_jammed`, etc.) will automatically be discovered as standard Home Assistant entities.
+4. Your mailbox node and its decoded telemetry (`battery`, `peak_tilt`, `reason`, `is_jammed`, etc.) will automatically be discovered as standard Home Assistant entities.
 
 ---
 

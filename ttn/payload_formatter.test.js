@@ -17,10 +17,10 @@ test("mail_inserted", () => {
     reason: "mail_inserted",
     battery: 3010,
     battery_sag: 45,
-    temperature_c: 18,
+    temperature: 18,
     mail_inside: true,
-    peak_tilt_deg: 48,
-    resting_tilt_deg: 0,
+    peak_tilt: 48,
+    resting_tilt: 0,
     open_duration: 800,
     is_jammed: false,
     mail_volume: "large_envelope",
@@ -31,9 +31,9 @@ test("clamped values", () => {
   const d = decode([0x01, 0, 255, 0xf4, 0, 90, 0, 255]).data;
   assert.equal(d.battery, 2000);
   assert.equal(d.battery_sag, 1275);
-  assert.equal(d.temperature_c, -12);
+  assert.equal(d.temperature, -12);
   assert.equal(d.mail_inside, false);
-  assert.equal(d.peak_tilt_deg, 90);
+  assert.equal(d.peak_tilt, 90);
   assert.equal(d.open_duration, 25500);
   assert.equal(d.mail_volume, "parcel_or_thick_catalog");
 });
@@ -43,10 +43,10 @@ test("manual_test", () => {
     reason: "manual_test",
     battery: 4550,
     battery_sag: 0,
-    temperature_c: 0,
+    temperature: 0,
     mail_inside: false,
-    peak_tilt_deg: 13,
-    resting_tilt_deg: 90,
+    peak_tilt: 13,
+    resting_tilt: 90,
     open_duration: 0,
   });
 });
@@ -68,10 +68,10 @@ test("every reason carries the full frame", () => {
       reason: names[code],
       battery: 3010,
       battery_sag: 45,
-      temperature_c: 18,
+      temperature: 18,
       mail_inside: true,
-      peak_tilt_deg: 3,
-      resting_tilt_deg: 3,
+      peak_tilt: 3,
+      resting_tilt: 3,
       open_duration: 0,
     });
   }

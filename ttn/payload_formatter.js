@@ -32,10 +32,10 @@ function decodeUplink(input) {
     reason: REASONS[code],
     battery: battery_mv,
     battery_sag: bytes[2] * 5,
-    temperature_c: (bytes[3] > 127) ? bytes[3] - 256 : bytes[3],
+    temperature: (bytes[3] > 127) ? bytes[3] - 256 : bytes[3],
     mail_inside: bytes[4] !== 0,
-    peak_tilt_deg: bytes[5],
-    resting_tilt_deg: bytes[6],
+    peak_tilt: bytes[5],
+    resting_tilt: bytes[6],
     open_duration: bytes[7] * 100
   };
 
