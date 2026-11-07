@@ -164,24 +164,28 @@ This project uses **LoRaWAN 1.0.4 OTAA (Over-The-Air Activation)** on the **EU86
 6. Click **Register end device**.
 
 ### 4.2 Applying Credentials & Region to Firmware
-All user configuration is isolated in a single dedicated file: [`include/settings.h`](./include/settings.h).
+Credentials and the PIN live in a gitignored file, [`include/secrets.h`](./include/secrets.example.h); everything else is in [`include/settings.h`](./include/settings.h) (pins are fixed in `include/board.h`). Serial logging is chosen by the PlatformIO env (`release` = off, `debug` = on), not by a setting.
 
-Simply paste the HEX strings directly from the TTN Console (spaces, dashes, colons, or "0x" prefixes are handled automatically):
+Copy the example and paste the HEX strings directly from the TTN Console (spaces, dashes, colons, or "0x" prefixes are handled automatically):
+
+```bash
+cp include/secrets.example.h include/secrets.h
+```
 
 ```cpp
-// 1. Regional Frequency Band (EU868, US915, AU915, AS923, KR920, IN865)
-#define LORAWAN_BAND       EU868
-
-// 2. TTN Credentials (Direct copy-paste from TTN Console)
+// include/secrets.h
 #define TTN_JOIN_EUI_HEX   "0000000000000000"
 #define TTN_DEV_EUI_HEX    "70B3D57ED0060000"
 #define TTN_APP_KEY_HEX    "00112233445566778899AABBCCDDEEFF"
+#define BLE_AUTH_PIN       "123456"
 ```
+
+The regional frequency band (`EU868`, `US915`, `AU915`, `AS923`, `KR920`, `IN865`) is `LORAWAN_BAND` in `include/settings.h`.
 
 ### 4.3 Setting Up the Payload Formatter
 1. In the TTN Console under your Application, navigate to **Payload formatters -> Uplink**.
 2. Set **Formatter type** to **Custom Javascript formatter**.
-3. Copy the entire contents of [`ttn_payload_formatter.js`](./ttn_payload_formatter.js) from this repository and paste it into the editor.
+3. Copy the entire contents of [`ttn/payload_formatter.js`](./ttn/payload_formatter.js) from this repository and paste it into the editor.
 4. Click **Save changes**.
 
 ### 4.4 LoRaWAN Uplink Payload Specification
@@ -197,18 +201,7 @@ Transmitted whenever the flap opens or 4 knocks are detected.
 | **3** | `resting_tilt_deg`| `uint8` | 0°–90° | Resting angle after settling. **> 10° indicates flap jammed open!** |
 | **4** | `open_duration_s` | `uint8` | `0.1s steps` | Total time flap spent open (0–25.5 seconds). |
 | **5** | `temperature_c` | `int8` | -40 °C to +85 °C | Internal mailbox temperature from on-die sensor. |
-| **6** | `event_type` | `uint8` | `0x01` or `0x02` | `0x01`: Mail Delivered (Flap Opened), `0x02`: Mailbox Emptied (4 Knocks). |
-
-#### FPort 2: 24-Hour Keepalive / Heartbeat (5 Bytes)
-Transmitted periodically to verify node health and battery status.
-
-| Byte | Field | Type | Description |
-| :---: | :--- | :---: | :--- |
-| **0** | `battery_rest_mv` | `uint8` | Resting battery voltage: `(mV - 2000) / 10`. |
-| **1** | `battery_sag_mv` | `uint8` | Voltage sag under load in 5 mV steps. |
-| **2** | `resting_tilt_deg`| `uint8` | Current resting tilt (0° = closed, >10° = jammed). |
-| **3** | `temperature_c` | `int8` | Internal temperature in °C. |
-| **4** | `heartbeat_count` | `uint8` | 8-bit rolling heartbeat counter (0–255). |
+| **6** | `event_type` | `uint8` | `0x01`, `0x02`, `0x03` | `0x01`: Mail Delivered (Flap Opened), `0x02`: Mailbox Emptied (4 Knocks), `0x03`: Manual Test (from the web console). |
 
 Decoded JSON output example:
 ```json
@@ -222,7 +215,7 @@ Decoded JSON output example:
   "open_duration_s": 0.8,
   "temperature_c": 18,
   "is_jammed": false,
-  "mail_volume": "Large Magazine / Catalog"
+  "mail_volume": "large_envelope"
 }
 ```
 
@@ -242,7 +235,7 @@ The node provides two ways to enter WebBluetooth maintenance mode:
 
 **Connection Persistence:** Once connected, the node **remains awake indefinitely** as long as the browser tab stays connected! As soon as you click *Disconnect* or close the browser (or if nobody connects within the advertising window), the node automatically shuts off the BLE radio and powers down to 2 µA System-Off sleep.
 ### 5.2 PIN Authentication & Actions
-All modifying actions are protected by a configurable PIN (defined in `settings.h`, default: `123456`):
+All modifying actions are protected by a configurable PIN (`BLE_AUTH_PIN` in `include/secrets.h`, default: `123456`):
 * **Comprehensive Live Telemetry:** Streams resting voltage, live voltage, voltage sag under LoRa load, core temperature, calibrated pitch angle, raw 3-axis accelerometer values ($X, Y, Z$), vector magnitude ($g$), zero horizon offset, live knock counts, LoRaWAN session status, uplink frame counter (`FCntUp`), and last transmitted hex payload.
 * **Knock Pattern Tracker:** Live hit indicator pulses on physical taps, displaying real-time hit counts and peak force ($g$) within the 2200 ms detection window.
 * **Test LoRaWAN Uplink:** Transmits an on-demand test packet directly from the browser to verify gateway reception, returning the frame counter, hex payload, and live battery sag.
@@ -295,11 +288,15 @@ Firmware is built using PlatformIO.
 # Clone and enter directory
 cd ~/Projects/smart/mailbox-tilt-sensor
 
-# Verify build
+# Build the release firmware (no serial logging)
 pio run
 
-# Flash to device via USB-C (ensure battery is disconnected!)
-pio run -t upload
+# Flash the debug firmware (serial logging @ 115200) via USB-C (ensure battery is disconnected!)
+pio run -e debug -t upload
+
+# Host unit tests (uplink encoder, hex key parser) and formatter test
+pio test -e native
+node --test ttn/payload_formatter.test.js
 ```
 
 *(Note: If the upload port is not automatically detected, double-tap the tiny reset button next to the XIAO USB-C port to force UF2 bootloader mode).*
