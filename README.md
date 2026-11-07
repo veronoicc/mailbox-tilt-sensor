@@ -12,8 +12,10 @@ The firmware is a one-shot state machine: the LIS3DH INT1 pin wakes the MCU from
 flowchart TD
   W[Wake: INT1 or power-on] --> B{Cold boot or bench mode?}
   B -- yes --> BLE1[BLE console, 15 s window]
-  B -- no --> K
-  BLE1 --> K{Flap closed at wake?}
+  BLE1 --> S
+  B -- no --> I{IMU present?}
+  I -- no --> S
+  I -- yes --> K{Flap closed at wake?}
   K -- yes --> KN{4 knocks within 2.2 s?}
   KN -- yes --> E[Uplink: mailbox emptied]
   KN -- no --> S
@@ -23,7 +25,7 @@ flowchart TD
   H -- no --> P{Peak at least 12°?}
   P -- no --> S
   P -- yes --> D[Uplink: mail delivered] --> S
-  E --> S[System-Off]
+  E --> S[System-Off, deferred while USB or no IMU]
 ```
 
 ---
@@ -49,35 +51,7 @@ flowchart TD
 
 Metal mailboxes act as a **Faraday cage** and subject internal electronics to heavy mechanical shock from incoming catalogs and magazines. This build uses a **Split-Mount Configuration**:
 
-```svg
-<svg viewBox="0 0 720 330" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14" fill="none" stroke="currentColor" stroke-width="2">
-  <!-- front wall with mail slot gap -->
-  <path d="M90 20 V130" stroke="var(--muted)" stroke-width="6"/>
-  <path d="M90 190 V310" stroke="var(--muted)" stroke-width="6"/>
-  <text x="76" y="165" text-anchor="end" fill="var(--muted)" stroke="none" font-size="12">mail slot</text>
-  <text x="76" y="30" text-anchor="end" fill="var(--muted)" stroke="none" font-size="12">metal front wall</text>
-  <!-- hinge + flap -->
-  <circle cx="90" cy="130" r="6" stroke="var(--warning)" fill="var(--surface)"/>
-  <path d="M90 130 L190 200" stroke="var(--c1)" stroke-width="4"/>
-  <text x="150" y="235" fill="var(--c1)" stroke="none">moving flap</text>
-  <!-- pod -->
-  <path d="M140 165 L170 185 L150 195 Z" stroke="var(--accent)" fill="var(--surface)"/>
-  <text x="190" y="170" fill="var(--accent)" stroke="none">flap pod (LIS3DH)</text>
-  <!-- service loop -->
-  <path d="M150 180 C 230 120 260 110 330 110" stroke="var(--warning)" stroke-dasharray="6 5"/>
-  <text x="240" y="100" fill="var(--warning)" stroke="none" font-size="12">5-wire service loop</text>
-  <!-- main unit -->
-  <rect x="330" y="60" width="330" height="140" rx="8" stroke="var(--accent)" fill="var(--surface)"/>
-  <text x="345" y="88" fill="currentColor" stroke="none" font-weight="bold">Static main unit</text>
-  <text x="345" y="112" fill="var(--muted)" stroke="none" font-size="13">XIAO nRF52840 + Wio-SX1262</text>
-  <text x="345" y="132" fill="var(--muted)" stroke="none" font-size="13">CR123A cradle + 100 µF cap</text>
-  <text x="345" y="152" fill="var(--muted)" stroke="none" font-size="13">sunk neodymium magnets (hold to steel)</text>
-  <!-- antenna -->
-  <path d="M110 160 H330" stroke="var(--success)" stroke-dasharray="2 6"/>
-  <text x="110" y="260" fill="var(--success)" stroke="none" font-size="12">868 MHz antenna: 6–10 mm off metal,</text>
-  <text x="110" y="276" fill="var(--success)" stroke="none" font-size="12">along the slot opening</text>
-</svg>
-```
+![Mailbox cross section](docs/cross-section.svg)
 
 ### 2.1 The Two Enclosures
 1. **Moving Flap Pod (Sensor Pod):**
@@ -102,62 +76,7 @@ Metal mailboxes block RF signals from escaping through sheet metal. However, the
 
 ## 3. Electrical Wiring Diagram
 
-```svg
-<svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14" fill="none" stroke="currentColor" stroke-width="2">
-  <!-- Battery + cap -->
-  <rect x="30" y="50" width="150" height="100" rx="8" stroke="var(--border)" fill="var(--surface)"/>
-  <text x="105" y="95" text-anchor="middle" fill="currentColor" stroke="none">CR123A</text>
-  <text x="105" y="115" text-anchor="middle" fill="var(--muted)" stroke="none">3.0 V Li-MnO₂</text>
-  <text x="192" y="66" fill="var(--error)" stroke="none">+</text>
-  <text x="192" y="136" fill="currentColor" stroke="none">−</text>
-  <rect x="225" y="88" width="70" height="34" rx="4" stroke="var(--c3)" fill="var(--surface)"/>
-  <text x="260" y="110" text-anchor="middle" fill="currentColor" stroke="none">100 µF</text>
-  <!-- rails -->
-  <path d="M180 70 H360" stroke="var(--error)"/>
-  <path d="M180 130 H360"/>
-  <path d="M260 70 V88" stroke="var(--error)"/>
-  <path d="M260 122 V130"/>
-  <text x="270" y="62" fill="var(--error)" stroke="none">3V3 rail</text>
-  <text x="270" y="148" fill="var(--muted)" stroke="none">GND rail</text>
-  <!-- XIAO -->
-  <rect x="360" y="30" width="240" height="190" rx="10" stroke="var(--accent)" fill="var(--surface)"/>
-  <text x="480" y="60" text-anchor="middle" fill="currentColor" stroke="none" font-weight="bold">Seeed XIAO nRF52840</text>
-  <text x="372" y="74" fill="var(--error)" stroke="none" font-size="12">3V3</text>
-  <text x="372" y="134" fill="currentColor" stroke="none" font-size="12">GND</text>
-  <text x="480" y="200" text-anchor="middle" fill="var(--muted)" stroke="none" font-size="12">DC-DC on, System-Off wake on D0</text>
-  <!-- XIAO right pins -->
-  <g stroke-width="2">
-    <path d="M600 70 H740" stroke="var(--error)"/>
-    <path d="M600 100 H740"/>
-    <path d="M600 130 H740" stroke="var(--c1)"/>
-    <path d="M600 160 H740" stroke="var(--c2)"/>
-    <path d="M600 190 H740" stroke="var(--c4)"/>
-  </g>
-  <g fill="currentColor" stroke="none" font-size="12" text-anchor="end">
-    <text x="592" y="74">3V3</text>
-    <text x="592" y="104">GND</text>
-    <text x="592" y="134">D4 SDA</text>
-    <text x="592" y="164">D5 SCL</text>
-    <text x="592" y="194">D0 INT1</text>
-  </g>
-  <!-- hinge -->
-  <path d="M670 20 V215" stroke="var(--warning)" stroke-dasharray="6 5"/>
-  <text x="670" y="14" text-anchor="middle" fill="var(--warning)" stroke="none" font-size="12">hinge · 5-wire service loop</text>
-  <!-- LIS3DH -->
-  <rect x="740" y="50" width="140" height="160" rx="8" stroke="var(--border)" fill="var(--surface)"/>
-  <text x="810" y="100" text-anchor="middle" fill="currentColor" stroke="none">LIS3DH</text>
-  <text x="810" y="120" text-anchor="middle" fill="var(--muted)" stroke="none">I²C 0x19</text>
-  <text x="810" y="140" text-anchor="middle" fill="var(--muted)" stroke="none">flap pod</text>
-  <!-- Wio -->
-  <path d="M480 220 V270"/>
-  <rect x="360" y="270" width="240" height="90" rx="8" stroke="var(--c5)" fill="var(--surface)"/>
-  <text x="480" y="300" text-anchor="middle" fill="currentColor" stroke="none">Wio-SX1262 (stacked)</text>
-  <text x="480" y="322" text-anchor="middle" fill="var(--muted)" stroke="none" font-size="12">SPI D8 / D9 / D10 · CS D1</text>
-  <text x="480" y="340" text-anchor="middle" fill="var(--muted)" stroke="none" font-size="12">RST D2 · BUSY D3 · DIO1 D6 · U.FL 868 MHz</text>
-  <!-- warning -->
-  <text x="30" y="400" fill="var(--error)" stroke="none">Never connect USB while the CR123A is on 3V3.</text>
-</svg>
-```
+![Wiring diagram](docs/wiring.svg)
 
 ### Pin Interconnection Table
 

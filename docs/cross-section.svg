@@ -1,0 +1,28 @@
+<svg viewBox="0 0 720 330" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14" fill="none" stroke="#24292f" stroke-width="2">
+  <style>@media (prefers-color-scheme: dark) {[stroke="#0969da"]{stroke:#58a6ff} [fill="#0969da"]{fill:#58a6ff} [stroke="#8250df"]{stroke:#d2a8ff} [fill="#8250df"]{fill:#d2a8ff} [stroke="#24292f"]{stroke:#e6edf3} [fill="#24292f"]{fill:#e6edf3} [stroke="#6e7781"]{stroke:#8b949e} [fill="#6e7781"]{fill:#8b949e} [stroke="#1a7f37"]{stroke:#3fb950} [fill="#1a7f37"]{fill:#3fb950} [stroke="#f6f8fa"]{stroke:#161b22} [fill="#f6f8fa"]{fill:#161b22} [stroke="#9a6700"]{stroke:#d29922} [fill="#9a6700"]{fill:#d29922} [stroke="#24292f"]{stroke:#e6edf3}}</style>
+  <!-- front wall with mail slot gap -->
+  <path d="M90 20 V130" stroke="#6e7781" stroke-width="6"/>
+  <path d="M90 190 V310" stroke="#6e7781" stroke-width="6"/>
+  <text x="76" y="165" text-anchor="end" fill="#6e7781" stroke="none" font-size="12">mail slot</text>
+  <text x="76" y="30" text-anchor="end" fill="#6e7781" stroke="none" font-size="12">metal front wall</text>
+  <!-- hinge + flap -->
+  <circle cx="90" cy="130" r="6" stroke="#9a6700" fill="#f6f8fa"/>
+  <path d="M90 130 L190 200" stroke="#8250df" stroke-width="4"/>
+  <text x="150" y="235" fill="#8250df" stroke="none">moving flap</text>
+  <!-- pod -->
+  <path d="M140 165 L170 185 L150 195 Z" stroke="#0969da" fill="#f6f8fa"/>
+  <text x="190" y="170" fill="#0969da" stroke="none">flap pod (LIS3DH)</text>
+  <!-- service loop -->
+  <path d="M150 180 C 230 120 260 110 330 110" stroke="#9a6700" stroke-dasharray="6 5"/>
+  <text x="240" y="100" fill="#9a6700" stroke="none" font-size="12">5-wire service loop</text>
+  <!-- main unit -->
+  <rect x="330" y="60" width="330" height="140" rx="8" stroke="#0969da" fill="#f6f8fa"/>
+  <text x="345" y="88" fill="#24292f" stroke="none" font-weight="bold">Static main unit</text>
+  <text x="345" y="112" fill="#6e7781" stroke="none" font-size="13">XIAO nRF52840 + Wio-SX1262</text>
+  <text x="345" y="132" fill="#6e7781" stroke="none" font-size="13">CR123A cradle + 100 µF cap</text>
+  <text x="345" y="152" fill="#6e7781" stroke="none" font-size="13">sunk neodymium magnets (hold to steel)</text>
+  <!-- antenna -->
+  <path d="M110 160 H330" stroke="#1a7f37" stroke-dasharray="2 6"/>
+  <text x="110" y="260" fill="#1a7f37" stroke="none" font-size="12">868 MHz antenna: 6–10 mm off metal,</text>
+  <text x="110" y="276" fill="#1a7f37" stroke="none" font-size="12">along the slot opening</text>
+</svg>
