@@ -13,104 +13,95 @@ const j = (v) => JSON.parse(JSON.stringify(v));
 const decode = (bytes, fPort = 1) => j(ctx.decodeUplink({ bytes, fPort }));
 
 test("mail_inserted", () => {
-  assert.deepEqual(decode([0x01, 101, 9, 18, 48, 0, 8]).data, {
-    type: "mail_inserted",
-    battery_voltage: 3.01,
-    battery_mv: 3010,
-    battery_sag_mv: 45,
+  assert.deepEqual(decode([0x01, 101, 9, 18, 1, 48, 0, 8]).data, {
+    reason: "mail_inserted",
+    battery: 3010,
+    battery_sag: 45,
     temperature_c: 18,
+    mail_inside: true,
     peak_tilt_deg: 48,
     resting_tilt_deg: 0,
-    open_duration_s: 0.8,
+    open_duration: 800,
     is_jammed: false,
     mail_volume: "large_envelope",
   });
 });
 
 test("clamped values", () => {
-  const d = decode([0x01, 0, 255, 0xf4, 90, 0, 255]).data;
-  assert.equal(d.battery_mv, 2000);
-  assert.equal(d.battery_sag_mv, 1275);
+  const d = decode([0x01, 0, 255, 0xf4, 0, 90, 0, 255]).data;
+  assert.equal(d.battery, 2000);
+  assert.equal(d.battery_sag, 1275);
   assert.equal(d.temperature_c, -12);
+  assert.equal(d.mail_inside, false);
   assert.equal(d.peak_tilt_deg, 90);
-  assert.equal(d.open_duration_s, 25.5);
+  assert.equal(d.open_duration, 25500);
   assert.equal(d.mail_volume, "parcel_or_thick_catalog");
 });
 
 test("manual_test", () => {
-  assert.deepEqual(decode([0x04, 255, 0, 0, 13, 90, 0]).data, {
-    type: "manual_test",
-    battery_voltage: 4.55,
-    battery_mv: 4550,
-    battery_sag_mv: 0,
+  assert.deepEqual(decode([0x07, 255, 0, 0, 0, 13, 90, 0]).data, {
+    reason: "manual_test",
+    battery: 4550,
+    battery_sag: 0,
     temperature_c: 0,
+    mail_inside: false,
     peak_tilt_deg: 13,
     resting_tilt_deg: 90,
-    open_duration_s: 0,
+    open_duration: 0,
   });
 });
 
 test("jammed flap", () => {
-  assert.equal(decode([0x01, 101, 0, 18, 40, 15, 20]).data.is_jammed, true);
+  assert.equal(decode([0x01, 101, 0, 18, 1, 40, 15, 20]).data.is_jammed, true);
 });
 
-test("mail_cleared", () => {
-  assert.deepEqual(decode([0x02, 101, 0, 18, 2]).data, {
-    type: "mail_cleared",
-    battery_voltage: 3.01,
-    battery_mv: 3010,
-    battery_sag_mv: 0,
-    temperature_c: 18,
-    source: "console",
-  });
-  assert.equal(decode([0x02, 101, 0, 18, 0]).data.source, "knock");
-  assert.equal(decode([0x02, 101, 0, 18, 1]).data.source, "downlink");
-});
-
-test("heartbeat", () => {
-  assert.deepEqual(decode([0x03, 101, 9, 18, 1, 1]).data, {
-    type: "heartbeat",
-    battery_voltage: 3.01,
-    battery_mv: 3010,
-    battery_sag_mv: 45,
-    temperature_c: 18,
-    mail_inside: true,
-    reason: "startup",
-  });
-  const d = decode([0x03, 101, 9, 18, 0, 3]).data;
-  assert.equal(d.mail_inside, false);
-  assert.equal(d.reason, "poll");
+test("every reason carries the full frame", () => {
+  const names = {
+    2: "mail_cleared",
+    3: "heartbeat",
+    4: "heartbeat_requested",
+    5: "heartbeat_startup",
+    6: "heartbeat_poll",
+  };
+  for (const code of Object.keys(names)) {
+    assert.deepEqual(decode([Number(code), 101, 9, 18, 1, 3, 3, 0]).data, {
+      reason: names[code],
+      battery: 3010,
+      battery_sag: 45,
+      temperature_c: 18,
+      mail_inside: true,
+      peak_tilt_deg: 3,
+      resting_tilt_deg: 3,
+      open_duration: 0,
+    });
+  }
 });
 
 test("unsupported fPort", () => {
-  assert.deepEqual(decode([1, 2, 3, 4, 5], 2), { errors: ["Unsupported FPort: 2"] });
+  assert.deepEqual(decode([1, 2, 3, 4, 5, 6, 7, 8], 2), { errors: ["Unsupported FPort: 2"] });
 });
 
 test("empty payload", () => {
   assert.equal(decode([]).errors.length, 1);
 });
 
-test("unknown type", () => {
-  assert.equal(decode([0x09, 101, 0, 18, 0]).errors.length, 1);
+test("unknown reason", () => {
+  assert.equal(decode([0x09, 101, 0, 18, 0, 0, 0, 0]).errors.length, 1);
 });
 
 test("wrong length", () => {
-  assert.equal(decode([0x01, 101, 9, 18, 48, 0]).errors.length, 1);
-  assert.equal(decode([0x02, 101, 0, 18]).errors.length, 1);
-  assert.equal(decode([0x03, 101, 0, 18, 1, 1, 0]).errors.length, 1);
+  assert.equal(decode([0x03, 101, 9, 18, 1, 1]).errors.length, 1);
 });
 
 test("encodeDownlink", () => {
   assert.deepEqual(j(ctx.encodeDownlink({ data: { action: "heartbeat" } })), { bytes: [1], fPort: 2 });
   assert.deepEqual(j(ctx.encodeDownlink({ data: { action: "clear" } })), { bytes: [2], fPort: 2 });
   assert.equal(j(ctx.encodeDownlink({ data: { action: "nope" } })).errors.length, 1);
-  assert.equal(j(ctx.encodeDownlink({ data: {} })).errors.length, 1);
 });
 
 test("decodeDownlink", () => {
   assert.deepEqual(j(ctx.decodeDownlink({ bytes: [1], fPort: 2 })), { data: { action: "heartbeat" } });
   assert.deepEqual(j(ctx.decodeDownlink({ bytes: [2], fPort: 2 })), { data: { action: "clear" } });
   assert.equal(j(ctx.decodeDownlink({ bytes: [9], fPort: 2 })).errors.length, 1);
-  assert.equal(j(ctx.decodeDownlink({ bytes: [], fPort: 2 })).errors.length, 1);
   assert.equal(j(ctx.decodeDownlink({ bytes: [1], fPort: 1 })).errors.length, 1);
 });

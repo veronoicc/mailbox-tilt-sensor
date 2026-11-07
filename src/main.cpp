@@ -90,7 +90,7 @@ static void handleWake(const AccelSample& initial) {
     DBG_PRINTLN("[TRIGGER] Accel INT1 fired while flap is closed (<8 deg). Checking knock pattern...");
     if (knockPatternDetected()) {
       stateSetMailInside(false);
-      lorawanSend(UplinkMsg::mailCleared(ClearSource::Knock));
+      lorawanSend(UplinkMsg::of(UplinkReason::MailCleared));
       cmdDrainDownlinks(kLogOut);
     }
     return;
@@ -100,7 +100,7 @@ static void handleWake(const AccelSample& initial) {
   const FlapMotion m = flapSample(initial.pitch);
 
   if (flapHeldOpen(m)) {
-    lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Poll));
+    lorawanSend(UplinkMsg::of(UplinkReason::HeartbeatPoll));
     cmdDrainDownlinks(kLogOut);
     if (!cmdSleepRequested()) bleConsoleRun();
     cmdClearSleepRequest();
@@ -149,7 +149,7 @@ void setup() {
   }
 
   if (heartbeatOnStartup(HEARTBEAT_ON_STARTUP, !woke, startups, HEARTBEAT_RAPID_REBOOT_MAX)) {
-    lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Startup));
+    lorawanSend(UplinkMsg::of(UplinkReason::HeartbeatStartup));
     cmdDrainDownlinks(kLogOut);
   }
 #if HEARTBEAT_INTERVAL_HOURS > 0
@@ -187,7 +187,7 @@ void loop() {
 
   int32_t left = (int32_t)(g_nextHeartbeatMs - millis());
   if (left <= 0) {
-    lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Timer));
+    lorawanSend(UplinkMsg::of(UplinkReason::Heartbeat));
     cmdDrainDownlinks(kLogOut);
     g_nextHeartbeatMs = millis() + HEARTBEAT_INTERVAL_MS;
     left = (int32_t)HEARTBEAT_INTERVAL_MS;

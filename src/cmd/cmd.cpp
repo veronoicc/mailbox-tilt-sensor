@@ -38,8 +38,7 @@ static void cmdRecalibrate(const ParsedLine&, CmdSource, const CmdOut& out) {
 
 static void cmdTestUplink(const ParsedLine&, CmdSource, const CmdOut& out) {
   reply(out, true, "Triggering LoRaWAN test uplink...");
-  // peak = current tilt, rest = zero offset so the console can show it.
-  bool ok = lorawanSend(UplinkMsg::manualTest(imuRead().pitch, imuTiltZero()));
+  bool ok = lorawanSend(UplinkMsg::of(UplinkReason::ManualTest));
   reply(out, ok, ok ? "LoRaWAN test packet finished" : "LoRaWAN test packet failed");
   out.status(out.ctx, StatusComp::Lora);
 }
@@ -63,14 +62,14 @@ static void cmdSleep(const ParsedLine&, CmdSource, const CmdOut& out) {
 }
 
 static void cmdHeartbeat(const ParsedLine&, CmdSource, const CmdOut& out) {
-  bool ok = lorawanSend(UplinkMsg::heartbeat(stateMailInside(), HeartbeatReason::Requested));
+  bool ok = lorawanSend(UplinkMsg::of(UplinkReason::HeartbeatRequested));
   reply(out, ok, ok ? "Heartbeat sent" : "Heartbeat failed");
   out.status(out.ctx, StatusComp::System);
 }
 
-static void cmdClear(const ParsedLine&, CmdSource src, const CmdOut& out) {
+static void cmdClear(const ParsedLine&, CmdSource, const CmdOut& out) {
   stateSetMailInside(false);
-  bool ok = lorawanSend(UplinkMsg::mailCleared(src == CmdSource::Downlink ? ClearSource::Downlink : ClearSource::Console));
+  bool ok = lorawanSend(UplinkMsg::of(UplinkReason::MailCleared));
   reply(out, ok, ok ? "Mail state cleared" : "Mail state cleared, uplink failed");
   out.status(out.ctx, StatusComp::System);
 }

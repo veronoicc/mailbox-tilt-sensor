@@ -150,39 +150,37 @@ The same file ([`ttn/payload_formatter.js`](./ttn/payload_formatter.js)) is a Lo
 ### 4.4 LoRaWAN Payload Specification
 
 #### FPort 1 uplinks
-Every uplink is a tagged frame: a common 4-byte header, then fields that depend on the message type.
+Every uplink is the same fixed 8-byte frame; only the reason differs.
 
 | Byte | Field | Type | Scale / Range | Description |
 | :---: | :--- | :---: | :--- | :--- |
-| **0** | `type` | `uint8` | `0x01`-`0x04` | `0x01` mail inserted, `0x02` mail cleared, `0x03` heartbeat, `0x04` manual test (from the console). |
-| **1** | `battery_mv` | `uint8` | `(mV - 2000) / 10` | Resting battery voltage (2000–4550 mV). |
-| **2** | `battery_sag_mv` | `uint8` | `sag_mv / 5` | Battery voltage drop under LoRa TX load (ESR health check). |
+| **0** | `reason` | `uint8` | `0x01`-`0x07` | `0x01` mail inserted, `0x02` mail cleared, `0x03` heartbeat (timer), `0x04` heartbeat requested (console or downlink), `0x05` heartbeat on startup, `0x06` heartbeat poll (flap held open), `0x07` manual test (from the console). |
+| **1** | `battery` | `uint8` | `(mV - 2000) / 10` | Resting battery voltage in mV (2000–4550). |
+| **2** | `battery_sag` | `uint8` | `mV / 5` | Battery voltage drop in mV under LoRa TX load (ESR health check). |
 | **3** | `temperature_c` | `int8` | -40 °C to +85 °C | Internal temperature from the on-die sensor. |
+| **4** | `mail_inside` | `uint8` | `0`/`1` | Mail-inside state at send time. |
+| **5** | `peak_tilt_deg` | `uint8` | 0°–90° | Peak tilt during the flap event. For every other reason: the current tilt. |
+| **6** | `resting_tilt_deg` | `uint8` | 0°–90° | Tilt after the flap settled (**> 10° on a delivery means the flap is jammed open**). For every other reason: the current tilt. |
+| **7** | `open_duration` | `uint8` | 100 ms steps | How long the flap was open, in ms. `0` for every reason except `mail_inserted`. |
 
-| Type | Extra bytes | Total |
-| :--- | :--- | :---: |
-| `mail_inserted`, `manual_test` | `[4]` peak tilt (0°–90°), `[5]` resting tilt (0°–90°, **> 10° on a delivery means the flap is jammed open**), `[6]` open duration in 0.1 s steps | 7 |
-| `mail_cleared` | `[4]` source: `0` knock, `1` downlink, `2` console | 5 |
-| `heartbeat` | `[4]` mail inside (`0`/`1`), `[5]` reason: `0` timer, `1` startup, `2` requested, `3` poll | 6 |
-
-Decoded JSON output example (`mail_inserted`):
+Decoded JSON output example (`mail_inserted`; `is_jammed` and `mail_volume` appear only for this reason):
 ```json
 {
-  "type": "mail_inserted",
-  "battery_voltage": 3.01,
-  "battery_mv": 3010,
-  "battery_sag_mv": 45,
+  "reason": "mail_inserted",
+  "battery": 3010,
+  "battery_sag": 45,
   "temperature_c": 18,
+  "mail_inside": true,
   "peak_tilt_deg": 48,
   "resting_tilt_deg": 0,
-  "open_duration_s": 0.8,
+  "open_duration": 800,
   "is_jammed": false,
   "mail_volume": "large_envelope"
 }
 ```
 
 #### FPort 2 downlinks
-One opcode byte: `0x01` send a heartbeat (reason `requested`), `0x02` clear the mail-inside state and send `mail_cleared` (source `downlink`). See section 5.3 for when a queued downlink is delivered.
+One opcode byte: `0x01` send a heartbeat (reason `heartbeat_requested`), `0x02` clear the mail-inside state and send `mail_cleared`. See section 5.3 for when a queued downlink is delivered.
 
 ---
 
@@ -254,7 +252,7 @@ You do **not** need to maintain manual MQTT configuration files. Home Assistant 
 1. In Home Assistant, go to **Settings -> Devices & Services -> Add Integration**.
 2. Search for **The Things Network**.
 3. Follow the standard setup wizard to connect your TTN account/cluster.
-4. Your mailbox node and its decoded telemetry (`battery_voltage`, `peak_tilt_deg`, `event`, `is_jammed`, etc.) will automatically be discovered as standard Home Assistant entities.
+4. Your mailbox node and its decoded telemetry (`battery`, `peak_tilt_deg`, `reason`, `is_jammed`, etc.) will automatically be discovered as standard Home Assistant entities.
 
 ---
 

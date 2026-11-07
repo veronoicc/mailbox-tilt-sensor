@@ -2,25 +2,32 @@
 #include <stddef.h>
 #include <stdint.h>
 // FPort 1 uplink / FPort 2 downlink. Layout and scaling must match ttn/payload_formatter.js.
+// Every uplink is the same fixed frame; only the reason differs.
 constexpr uint8_t UPLINK_FPORT = 1;
 constexpr uint8_t DOWNLINK_FPORT = 2;
-constexpr size_t UPLINK_MAX_SIZE = 8;
-enum class MsgType : uint8_t { MailInserted = 0x01, MailCleared = 0x02, Heartbeat = 0x03, ManualTest = 0x04 };
-enum class ClearSource : uint8_t { Knock = 0, Downlink = 1, Console = 2 };
-enum class HeartbeatReason : uint8_t { Timer = 0, Startup = 1, Requested = 2, Poll = 3 };
+constexpr size_t UPLINK_SIZE = 8;
+enum class UplinkReason : uint8_t {
+  MailInserted = 0x01,
+  MailCleared = 0x02,
+  Heartbeat = 0x03,           // periodic timer
+  HeartbeatRequested = 0x04,  // console command or downlink
+  HeartbeatStartup = 0x05,
+  HeartbeatPoll = 0x06,       // flap held open: poll for downlinks
+  ManualTest = 0x07,
+};
 struct UplinkMsg {
-  MsgType type;
-  uint16_t batteryMv;  // common header; filled in by lorawanSend(), callers leave 0
+  UplinkReason reason;
+  // Filled in by lorawanSend(); callers leave them 0.
+  uint16_t batteryMv;
   uint16_t sagMv;
   int8_t temperatureC;
-  union {
-    struct { float peakTiltDeg; float restTiltDeg; uint32_t openMs; } flap;  // MailInserted, ManualTest
-    struct { ClearSource source; } cleared;                                  // MailCleared
-    struct { bool mailInside; HeartbeatReason reason; } hb;                  // Heartbeat ("heartbeat" is the factory name)
-  };
+  bool mailInside;
+  // Flap data. lorawanSend() fills the current tilt (peak = rest, open = 0) unless hasTilt is set.
+  bool hasTilt;
+  float peakTiltDeg;
+  float restTiltDeg;
+  uint32_t openMs;
+  static UplinkMsg of(UplinkReason reason);
   static UplinkMsg mailInserted(float peakDeg, float restDeg, uint32_t openMs);
-  static UplinkMsg manualTest(float tiltDeg, float zeroDeg);  // peak=tilt, rest=zero offset, open=0
-  static UplinkMsg mailCleared(ClearSource source);
-  static UplinkMsg heartbeat(bool mailInside, HeartbeatReason reason);
 };
-size_t encodeUplink(const UplinkMsg& m, uint8_t out[UPLINK_MAX_SIZE]);  // returns bytes written
+void encodeUplink(const UplinkMsg& m, uint8_t out[UPLINK_SIZE]);

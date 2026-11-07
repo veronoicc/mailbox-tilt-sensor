@@ -8,6 +8,8 @@
 #include "settings.h"
 #include "core/log.h"
 #include "core/power.h"
+#include "core/state.h"
+#include "motion/imu.h"
 #include "lora/hex_key.h"
 
 static SX1262 g_radio = new Module(PIN_LORA_NSS, PIN_LORA_DIO1, PIN_LORA_NRST, PIN_LORA_BUSY);
@@ -176,9 +178,11 @@ bool lorawanSend(UplinkMsg msg) {
   msg.batteryMv = batteryRestMv();
   msg.sagMv = batterySagMv();
   msg.temperatureC = temperatureC();
-  uint8_t payload[UPLINK_MAX_SIZE];
-  size_t len = encodeUplink(msg, payload);
-  return sendPacket(payload, len);
+  msg.mailInside = stateMailInside();
+  if (!msg.hasTilt) msg.peakTiltDeg = msg.restTiltDeg = imuRead().pitch;
+  uint8_t payload[UPLINK_SIZE];
+  encodeUplink(msg, payload);
+  return sendPacket(payload, UPLINK_SIZE);
 }
 
 bool lorawanTakeDownlink(uint8_t& fPort, uint8_t* buf, size_t cap, size_t& len) {
