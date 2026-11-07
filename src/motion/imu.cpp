@@ -61,6 +61,9 @@ static bool readXYZ(float& x, float& y, float& z) {
 }
 
 bool imuBegin() {
+#if defined(PIN_ACCEL_SDA) && defined(PIN_ACCEL_SCL)
+  Wire.setPins(PIN_ACCEL_SDA, PIN_ACCEL_SCL);
+#endif
   Wire.begin();
   delay(15);
 
